@@ -1,3 +1,5 @@
-dataset/
+crohme/
 test/
+results/checkpoints/
 old_vit.py
+*.zip
