@@ -1,6 +1,8 @@
 import os
 import pickle
 import cv2
+import math
+import heapq
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import matplotlib.pyplot as plt
@@ -179,7 +181,7 @@ class CROHMEDataset(Dataset):
     def __getitem__(self, idx):
         # Fetch image path and LaTeX expression from the CSV file
         img_path = self.data.iloc[idx, 0]
-        img_path = img_path if not self.img_base_dir else os.path.join(self.img_base_dir, img_path)
+        # img_path = img_path if not self.img_base_dir else os.path.join(self.img_base_dir, img_path)
         latex_expr = self.data.iloc[idx, 1]
 
         # check image exists
@@ -245,27 +247,49 @@ class ViTEncoder(nn.Module):
         projected_state = self.projection(last_hidden_state)  # (batch_size, seq_len, hidden_dim)
         
         return projected_state
+    
+# Add a Sinusoidal Positional Encoding
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)  # Shape: (max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # Shape: (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)  # Apply sin to even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # Apply cos to odd indices
+        
+        pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1), :].to(x.device)
+        return x
+    
 
 # Transformer decoder for generating LaTeX sequences from image features
 class TransformerDecoder(nn.Module):
     def __init__(self, vocab_size, hidden_dim, num_layers, num_heads):
         super(TransformerDecoder, self).__init__()
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
-        self.positional_encoding = nn.Parameter(torch.zeros(1, 500, hidden_dim))  # positional encoding
+        self.positional_encoding = PositionalEncoding(hidden_dim)  # apply sinusoidal positional encoding
         self.decoder_layer = nn.TransformerDecoderLayer(hidden_dim, num_heads)  # Basic transformer decoder layer
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers)
         self.fc_out = nn.Linear(hidden_dim, vocab_size)  # Output layer to predict next tokens
 
     def forward(self, encoder_outputs, tgt, tgt_mask):
         # Embed the target tokens (partial LaTeX sequences) and add positional encoding
-        tgt_embedded = self.embedding(tgt) + self.positional_encoding[:, :tgt.size(1), :]
+        tgt_embedded = self.embedding(tgt)
+        tgt_embedded = self.positional_encoding(tgt_embedded)
         
         # Pass the embedded tokens and encoder outputs through the decoder
         # tgt_embedded: (batch_size, tgt_seq_len, hidden_dim)
         # encoder_outputs: (batch_size, encoder_seq_len, hidden_dim)
-        outputs = self.transformer_decoder(tgt_embedded.transpose(0, 1), 
-                                           encoder_outputs.transpose(0, 1), 
-                                           tgt_mask=tgt_mask)
+        outputs = self.transformer_decoder(
+            tgt_embedded.transpose(0, 1), 
+            encoder_outputs.transpose(0, 1), 
+            tgt_mask=tgt_mask
+        )
         outputs = self.fc_out(outputs.transpose(0, 1))  # Final output layer to get predicted tokens
         
         return outputs
@@ -286,6 +310,11 @@ class ImageToLatexModel(nn.Module):
 # Import the new amp module from torch
 scaler = torch.amp.GradScaler()
 
+# generate masks
+def generate_square_subsequent_mask(sz):
+    mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
+    return mask
+
 def train_one_epoch(model, train_loader, optimizer, criterion):
     model.train()
     epoch_loss = 0
@@ -297,9 +326,12 @@ def train_one_epoch(model, train_loader, optimizer, criterion):
         tgt_input = latex_exprs[:, :-1]
         tgt_output = latex_exprs[:, 1:]
         
-        tgt_mask = None
+        # add target mask
+        tgt_seq_len = tgt_input.size(1)
+        tgt_mask = generate_square_subsequent_mask(tgt_seq_len).to(device)
+        
         # Use torch.amp.autocast instead of torch.cuda.amp.autocast
-        with autocast():
+        with autocast('cuda'):
             # Forward pass
             output = model(images, tgt_input, tgt_mask)
             # Calculate loss
@@ -318,54 +350,105 @@ def train_one_epoch(model, train_loader, optimizer, criterion):
     # Return average loss over all batches
     return epoch_loss / len(train_loader)
 
+# add a beam search to replace greedy search
+def beam_search(model, image, tokenizer, beam_width=5, max_seq_len=100):
+    model.eval()
+    with torch.no_grad():
+        encoder_outputs = model.encoder(image)
+        device = image.device
+        
+        sequences = [[tokenizer.token_to_id('[CLS]')]]
+        scores = [0.0]
+        
+        for _ in range(max_seq_len):
+            all_candidates = []
+            for i in range(len(sequences)):
+                seq = sequences[i]
+                score = scores[i]
+                
+                tgt_input = torch.tensor([seq], device=device)
+                tgt_mask = generate_square_subsequent_mask(len(seq)).to(device)
+                
+                output = model.decoder(encoder_outputs, tgt_input, tgt_mask)
+                logits = output[:, -1, :]  # Get logits for the last token
+                log_probs = torch.log_softmax(logits, dim=-1)
+                
+                topk_log_probs, topk_indices = torch.topk(log_probs, beam_width)
+                
+                for k in range(beam_width):
+                    candidate_seq = seq + [topk_indices[0, k].item()]
+                    candidate_score = score + topk_log_probs[0, k].item()
+                    all_candidates.append((candidate_score, candidate_seq))
+            
+            # Select the best sequences
+            ordered = sorted(all_candidates, key=lambda tup: tup[0], reverse=True)
+            sequences = [seq for score, seq in ordered[:beam_width]]
+            scores = [score for score, seq in ordered[:beam_width]]
+            
+            # Check for end token
+            if all(seq[-1] == tokenizer.token_to_id('[SEP]') for seq in sequences):
+                break
+        
+        best_sequence = sequences[0]
+        return best_sequence[1:]  # Exclude the [CLS] token
+
 # Test model on new images and save predictions to file
-def make_predictions(model, tokenizer, test_folder, output_file):
+def make_predictions(model, tokenizer, test_folder, output_file, beam_width=5):
     model.eval()
     results = []
     transform = transforms.Compose([
         transforms.Resize((224, 224)), 
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])  # Adjust mean and std if needed
     ])
     
     for img_name in sorted(os.listdir(test_folder)):
         img_path = os.path.join(test_folder, img_name)
-        print(img_path)
+        print(f"Processing {img_path}")
         image = Image.open(img_path).convert("RGB")
         image = transform(image).unsqueeze(0).to(device)
         
-        with torch.no_grad():
-            outputs_tokens = []
-            # tgt_input = torch.tensor([[tokenizer.token_to_ids('[CLS]')]]).unsqueeze(
-            tgt_input = torch.tensor([[tokenizer.token_to_id('[CLS]')]]).to(device)
+        " change to use beam search "
+        best_sequence = beam_search(model, image, tokenizer, beam_width=beam_width)
+        decoded_latex = tokenizer.decode(best_sequence)
+        results.append(f"{img_name}: {decoded_latex}")
+        
+        # with torch.no_grad():
+        #     outputs_tokens = []
+        #     # tgt_input = torch.tensor([[tokenizer.token_to_ids('[CLS]')]]).unsqueeze(
+        #     tgt_input = torch.tensor([[tokenizer.token_to_id('[CLS]')]]).to(device)
             
-            for _ in range(100):  # Limit sequence generation to 100 tokens
-                output = model(image, tgt_input, None)
+        #     for _ in range(100):  # Limit sequence generation to 100 tokens
+        #         tgt_seq_len = tgt_input.size(1)
+        #         tgt_mask = generate_square_subsequent_mask(tgt_seq_len).to(device)
 
-                # get the prediction tokens
-                next_token = output.argmax(dim=-1)[:, -1]
-                outputs_tokens.append(next_token.item())
+        #         output = model(image, tgt_input, tgt_mask)
+
+        #         # get the prediction tokens
+        #         next_token = output.argmax(dim=-1)[:, -1]
+        #         outputs_tokens.append(next_token.item())
                 
-                if next_token.item() == tokenizer.token_to_id('[SEP]'):  # End sequence on [SEP]
-                    break
+        #         if next_token.item() == tokenizer.token_to_id('[SEP]'):  # End sequence on [SEP]
+        #             break
 
-                tgt_input = torch.cat((tgt_input, next_token.unsqueeze(0)), dim=1)
+        #         tgt_input = torch.cat((tgt_input, next_token.unsqueeze(0)), dim=1)
 
-            decoded_latex = tokenizer.decode(outputs_tokens)
-            results.append(f"{img_name}: {decoded_latex}")
+        #     decoded_latex = tokenizer.decode(outputs_tokens)
+        #     results.append(f"{img_name}: {decoded_latex}")
     
     with open(output_file, 'w') as f:
         f.write("\n".join(results))
 
 # Main script for training and testing the model
 if __name__ == "__main__":
-    saved_tokenizer_dir = 'dataset/crohme/train/custom_tokenizer.json'
-    caption_dir = 'dataset/crohme/train/caption.txt'
-    dictionary_dir = 'dataset/crohme/crohme_dictionary.txt'
-    training_img_pkl_dir = 'dataset/crohme/train/images.pkl'
-    train_img_base_dir = 'dataset/crohme/train/extracted_img'
-    mapping_csv = 'dataset/crohme/train/crohme_labels.csv'
-    test_img_base_dir = 'test/imgs'
-    test_output_dir = 'test/test_results.txt'
+    saved_tokenizer_dir = 'crohme/train/custom_tokenizer.json'
+    caption_dir = 'crohme/train/caption.txt'
+    dictionary_dir = 'crohme/dictionary.txt'
+    training_img_pkl_dir = 'crohme/train/images.pkl'
+    train_img_base_dir = 'crohme/train/extracted_img'
+    mapping_csv = 'crohme/train/crohme_labels.csv'
+    test_img_base_dir = 'test/'
+    test_output_dir = 'results/test_results.txt'
 
     # train_img_base_dir is empty
     if not os.path.exists(train_img_base_dir) or os.path.exists(train_img_base_dir) and not os.listdir(train_img_base_dir):
@@ -397,7 +480,7 @@ if __name__ == "__main__":
 
     # Create dataset and data loader
     train_dataset = CROHMEDataset(mapping_csv, tokenizer=tokenizer, transform=transform, img_base_dir=train_img_base_dir)
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=8, collate_fn=collate_fn, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=8, collate_fn=collate_fn, pin_memory=True)
 
     # Set up device for GPU/CPU usage
     if torch.cuda.is_available():
@@ -412,14 +495,14 @@ if __name__ == "__main__":
     vocab_size = tokenizer.get_vocab_size()
     model = ImageToLatexModel(vocab_size).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
 
     best_loss = float('inf')
     losses = []
 
     # Training loop
-    num_epochs = 50
+    num_epochs = 20
     print('Training starts')
     for epoch in tqdm(range(num_epochs)):
         epoch_loss = train_one_epoch(model, train_dataloader, optimizer, criterion)
@@ -428,7 +511,7 @@ if __name__ == "__main__":
         # Save the model if it achieves a better loss
         if epoch_loss < best_loss:
             best_loss = epoch_loss
-            torch.save(model.state_dict(), "results/best_model.pth")
+            torch.save(model.state_dict(), "results/checkpoints/best_model.pth")
             print(f"Model saved at epoch {epoch + 1}")
         
         print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {epoch_loss:.4f}')
@@ -442,6 +525,8 @@ if __name__ == "__main__":
     
     # Testing the trained model on new test images
     print("Testing model on simple_test folder...")
+    # state_dict = torch.load('results/checkpoints/best_model.pth', map_location=device)
+    # saved_model = model.load
     make_predictions(model, tokenizer=tokenizer, test_folder=test_img_base_dir, output_file=test_output_dir)
     print("Test results saved to test_output.txt")
 
