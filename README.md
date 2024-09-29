@@ -1,4 +1,4 @@
-# Handwriting OCR project
+# HOCR: Handwriting OCR project
 
 ### Model architecture
 
@@ -8,12 +8,14 @@ ViT + Transformer
 
 [CROHME](https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous).
 
+**Notice:** This link contains two datasets, CROHME and HMER, download from this link and extract CROHME.zip from the zip.
+
 To download and unzip:
 
 ```bash
 wget https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous
 
-unzip -d 'saved_zip'
+unzip filename.zip -d /path/to/destination
 ```
 
 #### Unzipped structure:
@@ -54,4 +56,6 @@ use Python package `pickle` to load or extract.
 
 ### init
 
-`pip install -r requirements.txt`# HOCR
+The versions of the packages listed in requirements.txt are not guaranteed to work.
+
+`pip install -r requirements.txt`
