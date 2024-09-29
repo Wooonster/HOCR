@@ -2,7 +2,18 @@
 
 ### Model architecture
 
-ViT + Transformer
+#### ~~ViT~~ + Transformer
+
+*Reason why ViT doesn't work well*: 
+
+Domain differences in pre-training ViT models: ViT (Vision Transformer) is usually pre-trained on large-scale natural image datasets like ImageNet. Your dataset, on the other hand, is an image of handwritten mathematical formulas, which is very different from natural images in terms of feature distribution. A pre-trained ViT model may not be able to extract valid features, resulting in encoder output that is meaningless to the decoder.
+
+Lack of low-level feature extraction: handwritten formula images have complex local features, such as stroke and symbol details. viT slices the image directly into patches and then performs a global self-attention mechanism, which may not be able to capture these critical local features.
+
+#### Corrections / TODOs
+
+Try implementing DenseNet instead, or combine DenseNet with ViT.
+
 
 ### Datasets and preprocessing
 
@@ -41,7 +52,7 @@ crohme % tree
 #### image file type
 
 The images are stored in the `.pkl` file as following structure:
-```json
+```
 'train_31988.jpg': 
     array([[141, 141, 143, ..., 152, 152, 152],
         [141, 141, 143, ..., 152, 152, 152],
