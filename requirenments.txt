@@ -1,9 +1,7 @@
-torch==2.0.0  # Ensure you use the correct version compatible with your CUDA version
-torchvision==0.15.0
-transformers==4.35.0  # Ensure this matches the version you used in training
-numpy==1.24.3
-matplotlib==3.7.1
-pandas==2.0.3
-Pillow==10.0.0
-tokenizers==0.13.3
-tqdm==4.65.0
+transformers
+tokenizers
+tqdm
+opencv-python
+matplotlib
+pandas
+Pillow
