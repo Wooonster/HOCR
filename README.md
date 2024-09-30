@@ -21,11 +21,11 @@ Try implementing DenseNet instead, or combine DenseNet with ViT.
 
 **Notice:** This link contains two datasets, CROHME and HMER, download from this link and extract CROHME.zip from the zip.
 
-To download and unzip:
+To ~~download and~~ unzip:
+
+~~wget https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous~~
 
 ```bash
-wget https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous
-
 unzip filename.zip -d /path/to/destination
 ```
 
