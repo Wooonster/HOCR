@@ -4,6 +4,7 @@ dataset/icdar
 dataset/im2latex_100k
 dataset/m2e
 dataset/all_parques
+dataset/*.parquet
 test/
 results/checkpoints/
 old_vit.py
