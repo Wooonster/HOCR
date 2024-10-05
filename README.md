@@ -1,8 +1,38 @@
 # HOCR: Handwriting OCR project
 
-### Model architecture
+## Architecture
 
-#### ~~ViT~~ + Transformer
+### DenseNet + Transformer decoder
+
+The model uses a stacked DenseNet, with residual connections and positional embedding to store spatial informations, and a Transformer decoder to predict the $\LaTeX$ formula.
+
+The model comprises two main components:
+
+- **Encoder**: A stacked DenseNet architecture that processes input images to extract meaningful features.
+- **Decoder**: A Transformer-based decoder that translates the extracted features into LaTeX code.
+
+#### Detailed Architecture
+1. DenseNet Encoder
+
+- DenseNetBone: The fundamental building block, consisting of two convolutional layers with bottleneck layers and optional dropout for regularization.
+- DenseNet: Stacks multiple DenseNetBone blocks and includes transition layers to reduce spatial dimensions and channel numbers.
+- StackedDenseNetEncoder: Combines multiple DenseNet modules with residual connections, culminating in a final convolution and 2D positional encoding to prepare features for the decoder.
+
+2. Transformer Decoder
+
+- Embedding Layer: Converts token IDs into dense vectors.
+- Positional Encoding: Adds sinusoidal positional information to embeddings.
+- TransformerDecoderLayer: Comprises multi-head attention and feed-forward neural networks.
+- Final Linear Layer: Maps decoder outputs to vocabulary size for token prediction.
+
+### Workflow
+
+- Image Preprocessing: Converts input images to grayscale, applies binary thresholding to ensure white formulas on black backgrounds, resizes to 224x224, and normalizes.
+- Feature Extraction: The DenseNet encoder processes the preprocessed image to extract feature maps.
+- Sequence Generation: The Transformer decoder generates LaTeX tokens based on the encoder's output, utilizing beam search to optimize predictions.
+
+
+##### Previous Failed Architecture: ~~ViT~~ + Transformer
 
 *Reason why ViT doesn't work well*: 
 
@@ -10,64 +40,65 @@ Domain differences in pre-training ViT models: ViT (Vision Transformer) is usual
 
 Lack of low-level feature extraction: handwritten formula images have complex local features, such as stroke and symbol details. viT slices the image directly into patches and then performs a global self-attention mechanism, which may not be able to capture these critical local features.
 
-#### Corrections / TODOs
 
-Try implementing DenseNet instead, or combine DenseNet with ViT.
+## Datasets and preprocessing
 
+The dataset combines many different datasets, with a total amount of over 240K images. 
 
-### Datasets and preprocessing
+The images are onverted to grayscale, applied binary thresholding to ensure white formulas on black backgrounds, resized to 224x224, and normalized.
 
-[CROHME](https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous).
+### Dataset Structure
+The project expects the dataset to be in a Parquet file (.parquet) with the following columns:
 
-**Notice:** This link contains two datasets, CROHME and HMER, download from this link and extract CROHME.zip from the zip.
+- formula: The LaTeX expression of the handwritten formula.
+- filename: The name of the image file.
+- image: The binary content of the image.
 
-To ~~download and~~ unzip:
+## Installation
 
-~~wget https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous~~
+### Prerequisites
 
-```bash
-unzip filename.zip -d /path/to/destination
-```
-
-#### Unzipped structure:
-
-```bash
-crohme % tree
-.
-├── 2014
-│   ├── caption.txt
-│   └── images.pkl
-├── 2016
-│   ├── caption.txt
-│   └── images.pkl
-├── 2019
-│   ├── caption.txt
-│   └── images.pkl
-├── crohme_dictionary.txt
-└── train
-    ├── caption.txt
-    └── images.pkl
-```
-
-#### image file type
-
-The images are stored in the `.pkl` file as following structure:
-```
-'train_31988.jpg': 
-    array([[141, 141, 143, ..., 152, 152, 152],
-        [141, 141, 143, ..., 152, 152, 152],
-        [144, 144, 143, ..., 153, 153, 153],
-        ...,
-        [144, 144, 144, ..., 149, 149, 149],
-        [145, 145, 144, ..., 149, 149, 149],
-        [145, 145, 144, ..., 149, 149, 149]], dtype=uint8)
-```
-
-use Python package `pickle` to load or extract.
+Python: 3.7 or higher
+PyTorch: 1.8.0 or higher
+CUDA: (Optional) For GPU acceleration
 
 
 ### init
 
-The versions of the packages listed in requirements.txt are not guaranteed to work.
+The versions of the packages listed in `requirements.txt` are not guaranteed to work.
 
 `pip install -r requirements.txt`
+
+If requirements.txt is not provided, install the necessary packages manually:
+
+`pip install torch torchvision tokenizers pillow opencv-python matplotlib numpy pandas tqdm`
+
+## Run
+
+### Dataset preparing
+
+### Run the Training Script
+
+Execute the training process using the provided script:
+
+```bash
+python train.py --data_pq_file path/to/hmer_train.parquet \
+                --dictionary_dir path/to/dictionary.txt \
+                --save_tokenizer_dir path/to/custom_tokenizer.json \
+                --checkpoint_dir path/to/save/checkpoints \
+                --num_epochs 30 \
+                --batch_size 8 \
+                --learning_rate 3e-4 \
+                --weight_decay 1e-4
+```
+
+### Inference
+
+Ensure you have the test images.
+
+```bash
+python predict.py --checkpoint path/to/best_model.pth \
+                  --tokenizer path/to/custom_tokenizer.json \
+                  --test_folder path/to/test/imgs/ \
+                  --output_file path/to/results/test_results_densenet.txt
+```
