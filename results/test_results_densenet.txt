@@ -2,3 +2,6 @@ eq1.png: a x ^ { 2 } + 6 x + c = 0
 eq2.png: E M C ^ { 2 } = M C ^ { 2 }
 eq3.png: E = 2 c ^ { 2 } ^ { 2 } 2 1 0 2 2 2 2 2 2 2 2 1 2 a } a } a b a 2 a } a a } a a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a
 eq4.png: E = 1 . 8 0 \ times 1 0 ^ { 4 } 5
+hard_1.png: n = \ frac { 1 } { 5 0 0 } \ cdot ( \ frac { 1 } { 5 0 0 } \ cdot \ frac { 1 } { 2 } \ cdot \ frac { 8 0 0 } { 5 0 0 0 0 0 0 } = 1 5 0 0 0 0 0 0 0 c m 2 0 0 0 0 0 0 0 0 0 0 0 0 m 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+hard_2.png: a _ { 0 } = a _ { 1 } + a _ { 0 } ( \ frac { R _ { 0 } - V _ { 0 } } { R _ { 0 } - R _ { 0 } } )
+hard_3.png: R _ { \ m a x } = \ frac { \ frac { 1 } { R _ { \ m a x } } { R _ { \ m a x } } \ cdot \ frac { \ Delta \ m b d a _ { \ m a x } } { R _ { \ m b d a \ cdot \ cdot \ m a _ { \ m a x } \ cdot \ cdot \ m b d a _ { \ m b d a _ { \ m
