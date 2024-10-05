@@ -1,14 +1,12 @@
 import os
 import io
-import pickle
 import cv2
 import math
-import heapq
 import xml.etree.ElementTree as ET
-from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import multiprocessing
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,6 +24,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.models import densenet121
 from torch.amp import autocast, GradScaler
 
+
 " dataset preprocessings "
 def prepare_datasets(data_pq_file):
     df = pd.read_parquet(data_pq_file)
@@ -36,31 +35,24 @@ def prepare_datasets(data_pq_file):
 " customized tokenizer "
 # Preprocessing the dataset with custom tokenizer using Byte-Pair Encoding (BPE)
 def custom_tokenizer(captions, dictionary_dir, save_tokenizer_dir):
-    # captions = []
-    # with open(caption_dir, 'r') as f:
-    #     data = f.readlines()
-    #     for line in data:
-    #         line = line.strip()
-    #         if '\t' in line:
-    #             _, label = line.split('\t', 1)  # Split by tab to get caption label
-    #         else:
-    #             continue  # Skip lines with improper formatting
-    #         captions.append(label)
-
+    # 读取字典项
     dictionary = []
     with open(dictionary_dir, 'r') as f:
         data = f.readlines()
-        dictionary.extend([line.strip() for line in data])  # Read in dictionary items
-    
-    # Initialize tokenizer using BPE
+        dictionary.extend([line.strip() for line in data])  # 读取字典项
+
+    # 初始化 BPE 分词器
     tokenizer = Tokenizer(BPE())
-    
-    # Train the tokenizer
-    trainer = BpeTrainer(vocab=dictionary, special_tokens=['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]'])
-    tokenizer.pre_tokenizer = pre_tokenizers.Sequence([Whitespace()])  # Use whitespace to segment words
-    tokenizer.train_from_iterator(captions, trainer=trainer)  # Train the tokenizer on provided captions
-    
-    # Save tokenizer
+
+    # 训练分词器
+    trainer = BpeTrainer(
+        vocab_size=len(dictionary),
+        special_tokens=['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]']
+    )
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence([Whitespace()])  # 使用空格进行分词
+    tokenizer.train_from_iterator(captions, trainer=trainer)  # 在提供的 caption 上训练分词器
+
+    # 保存分词器
     tokenizer.save(save_tokenizer_dir)
     print(f'New tokenizer trained and saved!')
 
@@ -75,54 +67,52 @@ Convert the image to grayscale, black the background and white the formula
 class PreprocessImage:
     def __call__(self, image):
         # graysacle
-        img = image.convert(':')
-
-        # to numpy
+        img = image.convert('L')  # 'L' 转换为灰度图像
+        
+        # 转换为 numpy 数组
         img_arr = np.array(img)
-
+        
         # 应用二值化阈值，确保公式为白色，背景为黑色
-        # THRESH_BINARY_INV 将公式（通常为黑色）转换为白色，背景为黑色
         _, img_bin = cv2.threshold(img_arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
+        
+        # 转换回 PIL 图像
         image = Image.fromarray(img_bin)
         return image
 
 # Dataset class for loading the CROHME dataset with image paths and LaTeX expressions
 class CROHMEDataset(Dataset):
     def __init__(self, df, tokenizer, transform=None):
-        self.data = df
+        self.images = df['image'].tolist()
+        self.captions = df['formula'].tolist()
+        self.img_names = df['filename'].tolist()
         self.transform = transform
         self.tokenizer = tokenizer
 
     def __len__(self):
-        return len(self.data)
+        return len(self.captions)
 
     def __getitem__(self, idx):
-        # Fetch image path and LaTeX expression from the CSV file
-        img_byte = list(self.data['image'])[idx]
-        latex_expr = list(self.data['formula'])[idx]
-        img_name = list(self.data['filename'])[idx]
+        img_byte = self.images[idx]
+        latex_expr = self.captions[idx]
+        img_name = self.img_names[idx]
 
-        # Check if image exists
         if img_byte is None:
-            raise FileNotFoundError(f"Image \'{img_name}\' doesn't exist.")
-        
-        # Load and transform the image
+            raise FileNotFoundError(f"Image '{img_name}' doesn't exist.")
+
         img = io.BytesIO(img_byte)
-        image = Image.open(img).convert("RGB")
+        image = Image.open(img).convert("L")  # 根据前面的修正，转换为灰度图像
         if self.transform:
             image = self.transform(image)
-        
-        # Custom Tokenizer
+
+        # 自定义 Tokenizer
         encoded = self.tokenizer.encode(latex_expr)
-        # Manually add special tokens
+        # 手动添加特殊标记
         cls_id = self.tokenizer.token_to_id('[CLS]')
         sep_id = self.tokenizer.token_to_id('[SEP]')
         encoded_ids = [cls_id] + encoded.ids + [sep_id]
         latex_encoded = torch.tensor(encoded_ids, dtype=torch.long)
-        
-        return image, latex_encoded
 
+        return image, latex_encoded
 
 " CollateFn class defined from top "
 # 顶层定义的 CollateFn 类
@@ -259,13 +249,16 @@ class StackedDenseNetEncoder(nn.Module):
             )
             self.densenets.append(densenet)
 
-            # Add a convolutional layer if the input and output channels differ
+            # Add a convolutional layer with stride=2 if the input and output channels differ
             if current_channels != densenet.num_channels:
                 self.residual_convs.append(
-                    nn.Conv2d(current_channels, densenet.num_channels, kernel_size=1, bias=False)
+                    nn.Conv2d(current_channels, densenet.num_channels, kernel_size=1, stride=2, bias=False)
                 )
             else:
-                self.residual_convs.append(None)  # No need for convolution if channels match
+                # If channels match but spatial dimensions change, still downsample identity
+                self.residual_convs.append(
+                    nn.AvgPool2d(kernel_size=2, stride=2) if num_densenets > 1 else None
+                )
 
             current_channels = densenet.num_channels  # Update channels for the next DenseNet
 
@@ -416,7 +409,7 @@ def train_one_epoch(model, train_loader, optimizer, criterion):
         
         # Use autocast and scaler only if device is 'cuda'
         if device == 'cuda':
-            with autocast():
+            with autocast(device_type='cuda', dtype=torch.float16):
                 output = model(images, tgt_input, tgt_mask)
                 loss = criterion(output.reshape(-1, output.size(-1)), tgt_output.reshape(-1))
             # Backward pass with gradient scaling
@@ -487,8 +480,7 @@ def make_predictions(model, tokenizer, test_folder, output_file, beam_width=5):
         transforms.Resize((224, 224)), 
         transforms.ToTensor(),
         transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],  # ImageNet means
-            std=[0.229, 0.224, 0.225]    # ImageNet stds
+            mean=[0.5], std=[0.5]          # 单通道归一化
         )
     ])
     
@@ -511,8 +503,8 @@ if __name__ == '__main__':
     data_pq_file = 'dataset/hmer_train.parquet'
     dictionary_dir = 'dataset/dictionary.txt'
     saved_tokenizer_dir = 'dataset/custom_tokenizer.json'
-    test_img_base_dir = 'test/imgs'
-    test_output_dir = 'results/test_results.txt'
+    test_img_base_dir = 'test/imgs/'
+    test_output_dir = 'results/test_results_densenet.txt'
 
     # Ensure the directories exist
     os.makedirs(os.path.dirname(test_output_dir), exist_ok=True)
@@ -551,30 +543,30 @@ if __name__ == '__main__':
 
     # Create dataset and data loader
     train_dataset = CROHMEDataset(df=data_df, tokenizer=tokenizer, transform=transform)
-    # collate_fn = create_collate_fn(tokenizer)
-    # train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=8, collate_fn=collate_fn, pin_memory=True)
-    # 创建 DataLoader 时使用顶层 CollateFn 类
+
+    # 根据系统的 CPU 核心数动态设置 num_workers
+    num_workers = min(8, multiprocessing.cpu_count())
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=16,
+        batch_size=8,
         shuffle=True,
-        num_workers=8,
+        num_workers=num_workers,
         collate_fn=create_collate_fn(tokenizer),
-        pin_memory=True
+        pin_memory=True if device == 'cuda' else False
     )
 
     # Initialize the model, optimizer, and loss function
     vocab_size = tokenizer.get_vocab_size()
-    model = ImageToLatexModel(vocab_size, hidden_dim=256, num_layers=8, num_heads=8).to(device)
+    model = ImageToLatexModel(vocab_size, hidden_dim=256, num_layers=6, num_heads=8).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.token_to_id('[PAD]'))
 
     best_loss = float('inf')
     losses = []
 
     # Training loop
-    num_epochs = 100
+    num_epochs = 30
     print('Training starts')
     for epoch in tqdm(range(num_epochs)):
         epoch_loss = train_one_epoch(model, train_dataloader, optimizer, criterion)

@@ -1,0 +1,4 @@
+eq1.png: a x ^ { 2 } + 6 x + c = 0
+eq2.png: E M C ^ { 2 } = M C ^ { 2 }
+eq3.png: E = 2 c ^ { 2 } ^ { 2 } 2 1 0 2 2 2 2 2 2 2 2 1 2 a } a } a b a 2 a } a a } a a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a
+eq4.png: E = 1 . 8 0 \ times 1 0 ^ { 4 } 5
