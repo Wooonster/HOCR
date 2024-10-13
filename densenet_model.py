@@ -2,7 +2,6 @@ import os
 import io
 import cv2
 import math
-import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -14,12 +13,10 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from PIL import Image
 from tqdm import tqdm
-from tokenizers import Tokenizer, decoders, pre_tokenizers, processors, trainers
+from tokenizers import Tokenizer, pre_tokenizers
 from tokenizers.models import BPE
-from tokenizers.normalizers import NFD, StripAccents
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
-from transformers import BertConfig, BertTokenizer, ViTModel
 from torch.utils.data import DataLoader, Dataset
 from torchvision.models import densenet121
 from torch.amp import autocast, GradScaler
@@ -57,7 +54,6 @@ def custom_tokenizer(captions, dictionary_dir, save_tokenizer_dir):
     print(f'New tokenizer trained and saved!')
 
     return tokenizer
-
 
 '''
 Add a preprocess to images

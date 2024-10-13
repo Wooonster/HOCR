@@ -11,7 +11,7 @@ from torchvision import transforms
 import numpy as np
 
 # ---------------------------
-# 模型定义部分
+# 模型定义
 # ---------------------------
 
 class DenseNetBone(nn.Module):
