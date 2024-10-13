@@ -2,6 +2,7 @@ import os
 import io
 import cv2
 import math
+import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,7 +27,9 @@ from torch.amp import autocast, GradScaler
 def prepare_datasets(data_pq_file):
     df = pd.read_parquet(data_pq_file)
     captions, img_names, img_bytes = df['formula'], df['filename'], df['image']
-    assert len(captions) == len(img_names) == len(img_bytes), 'dataset parquet got errors'
+    # assert len(captions) == len(img_names) == len(img_bytes), 'dataset parquet got errors'
+    if not len(captions) == len(img_names) == len(img_bytes):
+        warnings.warn('Warning! Dataset may got errors.')
     return df
 
 " customized tokenizer "
