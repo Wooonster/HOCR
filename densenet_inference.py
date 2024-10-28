@@ -155,7 +155,7 @@ class PositionalEncoding2D(nn.Module):
         return tensor
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=500):
+    def __init__(self, d_model, max_len=1000):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -327,9 +327,9 @@ if __name__ == '__main__':
     parser.add_argument('--tokenizer', type=str, required=True, help='Path to the custom tokenizer (.json file)')
     parser.add_argument('--test_folder', type=str, required=True, help='Path to the folder containing test images')
     parser.add_argument('--output_file', type=str, required=True, help='Path to save the prediction results')
-    parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension size')
-    parser.add_argument('--num_layers', type=int, default=6, help='Number of transformer decoder layers')
-    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads')
+    parser.add_argument('--hidden_dim', type=int, default=512, help='Hidden dimension size')
+    parser.add_argument('--num_layers', type=int, default=8, help='Number of transformer decoder layers')
+    parser.add_argument('--num_heads', type=int, default=16, help='Number of attention heads')
     args = parser.parse_args()
 
     # 设置设备

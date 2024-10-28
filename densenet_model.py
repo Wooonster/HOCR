@@ -1,4 +1,6 @@
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # 禁用 tokenizers 并行性警告
+
 import io
 import cv2
 import math
@@ -18,19 +20,37 @@ from tokenizers import Tokenizer, pre_tokenizers
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
-from torch.utils.data import DataLoader, Dataset
-from torchvision.models import densenet121
-from torch.amp import autocast, GradScaler
+from torch.utils.data import DataLoader, Dataset, random_split
+from sklearn.model_selection import train_test_split  # 新增
+from torch.cuda.amp import autocast, GradScaler  # 修改导入路径
 
+# 设置随机种子以保证可复现性
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
+set_seed(5525)
 
 " dataset preprocessings "
-def prepare_datasets(data_pq_file):
+def prepare_datasets(data_pq_file, test_size=0.1, random_state=42):
     df = pd.read_parquet(data_pq_file)
     captions, img_names, img_bytes = df['formula'], df['filename'], df['image']
-    # assert len(captions) == len(img_names) == len(img_bytes), 'dataset parquet got errors'
     if not len(captions) == len(img_names) == len(img_bytes):
         warnings.warn('Warning! Dataset may got errors.')
-    return df
+
+    # 将数据集划分为训练集和验证集
+    train_df, val_df = train_test_split(df, test_size=test_size, random_state=random_state)
+    
+    # 计算最大序列长度
+    train_max_len = train_df['formula'].apply(lambda x: len(x)).max()
+    val_max_len = val_df['formula'].apply(lambda x: len(x)).max()
+    overall_max_len = max(train_max_len, val_max_len)
+    print(f"Maximum sequence length in dataset: {overall_max_len}")
+    
+    # 设置 Positional Encoding 的 max_len
+    global_max_len = max(1000, overall_max_len + 100)  # 加上缓冲区
+    return train_df.reset_index(drop=True), val_df.reset_index(drop=True), global_max_len
 
 " customized tokenizer "
 # Preprocessing the dataset with custom tokenizer using Byte-Pair Encoding (BPE)
@@ -65,8 +85,8 @@ Convert the image to grayscale, black the background and white the formula
 '''
 class PreprocessImage:
     def __call__(self, image):
-        # graysacle
-        img = image.convert('L')  # 'L' 转换为灰度图像
+        # 转换为灰度图像
+        img = image.convert('L')
         
         # 转换为 numpy 数组
         img_arr = np.array(img)
@@ -80,12 +100,13 @@ class PreprocessImage:
 
 # Dataset class for loading the CROHME dataset with image paths and LaTeX expressions
 class CROHMEDataset(Dataset):
-    def __init__(self, df, tokenizer, transform=None):
+    def __init__(self, df, tokenizer, transform=None, max_seq_len=1000):  # 增加 max_seq_len 参数
         self.images = df['image'].tolist()
         self.captions = df['formula'].tolist()
         self.img_names = df['filename'].tolist()
         self.transform = transform
         self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
 
     def __len__(self):
         return len(self.captions)
@@ -99,7 +120,7 @@ class CROHMEDataset(Dataset):
             raise FileNotFoundError(f"Image '{img_name}' doesn't exist.")
 
         img = io.BytesIO(img_byte)
-        image = Image.open(img).convert("L")  # 根据前面的修正，转换为灰度图像
+        image = Image.open(img).convert("L")  # 转换为灰度图像
         if self.transform:
             image = self.transform(image)
 
@@ -109,6 +130,11 @@ class CROHMEDataset(Dataset):
         cls_id = self.tokenizer.token_to_id('[CLS]')
         sep_id = self.tokenizer.token_to_id('[SEP]')
         encoded_ids = [cls_id] + encoded.ids + [sep_id]
+        
+        # 截断序列
+        if len(encoded_ids) > self.max_seq_len:
+            encoded_ids = encoded_ids[:self.max_seq_len]
+        
         latex_encoded = torch.tensor(encoded_ids, dtype=torch.long)
 
         return image, latex_encoded
@@ -177,7 +203,7 @@ class DenseNetBone(nn.Module):
         return out
 
 '''
-DenseNet class using the DenseNetBlock, with given number of stacking blocks.
+DenseNet class using the DenseNetBone, with given number of stacking blocks.
 
 num_blocks: Number of DenseNetBone in this DenseNet.
 growth_rate: Number of channels to add per block.
@@ -224,7 +250,7 @@ class DenseNet(nn.Module):
             x = block(x)
         x = self.transition(x)
         return x
-    
+
 '''
 Stacked DenseNet Encoder with residual connections
 '''
@@ -290,7 +316,7 @@ class StackedDenseNetEncoder(nn.Module):
         x = x.view(batch_size, channels, H * W)
         x = x.permute(0, 2, 1)
         return x
-    
+
 " 2D Positional Encoding"
 class PositionalEncoding2D(nn.Module):
     def __init__(self, hidden_dim):
@@ -318,10 +344,10 @@ class PositionalEncoding2D(nn.Module):
 
         tensor = tensor + pe_y + pe_x
         return tensor
-    
+
 # Positional Encoding
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=500):
+    def __init__(self, d_model, max_len=1000):  # 将 max_len 设置为 1000
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)  # Shape: (max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # Shape: (max_len, 1)
@@ -339,10 +365,10 @@ class PositionalEncoding(nn.Module):
 
 # Transformer decoder for generating LaTeX sequences from image features
 class TransformerDecoder(nn.Module):
-    def __init__(self, vocab_size, hidden_dim, num_layers, num_heads):
+    def __init__(self, vocab_size, hidden_dim, num_layers, num_heads, max_len=1000):
         super(TransformerDecoder, self).__init__()
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
-        self.positional_encoding = PositionalEncoding(hidden_dim)  # Apply sinusoidal positional encoding
+        self.positional_encoding = PositionalEncoding(hidden_dim, max_len=max_len)  # 设置 max_len=1000
         self.decoder_layer = nn.TransformerDecoderLayer(hidden_dim, num_heads)  # Basic transformer decoder layer
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers)
         self.fc_out = nn.Linear(hidden_dim, vocab_size)  # Output layer to predict next tokens
@@ -361,11 +387,11 @@ class TransformerDecoder(nn.Module):
         outputs = self.fc_out(outputs.transpose(0, 1))  # Final output layer to get predicted tokens
         
         return outputs
-    
+
 
 " Encoder using stacked DenseNet "
 class ImageToLatexModel(nn.Module):
-    def __init__(self, vocab_size, hidden_dim=256, num_layers=4, num_heads=8):
+    def __init__(self, vocab_size, hidden_dim=256, num_layers=4, num_heads=8, max_len=1000):
         super().__init__()
         self.encoder = StackedDenseNetEncoder(
             num_densenets=3,
@@ -376,7 +402,7 @@ class ImageToLatexModel(nn.Module):
             bottleneck_width=4,
             dropout_rate=0.1
         )
-        self.decoder = TransformerDecoder(vocab_size, hidden_dim, num_layers, num_heads)
+        self.decoder = TransformerDecoder(vocab_size, hidden_dim, num_layers, num_heads, max_len=max_len)
     
     def forward(self, x, tgt, tgt_mask):
         encoder_outputs = self.encoder(x)  # (batch_size, seq_len, hidden_dim)
@@ -408,7 +434,7 @@ def train_one_epoch(model, train_loader, optimizer, criterion):
         
         # Use autocast and scaler only if device is 'cuda'
         if device == 'cuda':
-            with autocast(device_type='cuda', dtype=torch.float16):
+            with autocast():  # 移除 device_type 和 dtype 参数
                 output = model(images, tgt_input, tgt_mask)
                 loss = criterion(output.reshape(-1, output.size(-1)), tgt_output.reshape(-1))
             # Backward pass with gradient scaling
@@ -429,8 +455,28 @@ def train_one_epoch(model, train_loader, optimizer, criterion):
     
     return epoch_loss / len(train_loader)
 
+def evaluate(model, val_loader, criterion):
+    model.eval()
+    epoch_loss = 0
+    with torch.no_grad():
+        for images, latex_exprs in val_loader:
+            images = images.to(device)
+            latex_exprs = latex_exprs.to(device)
+            
+            tgt_input = latex_exprs[:, :-1]
+            tgt_output = latex_exprs[:, 1:]
+            
+            tgt_seq_len = tgt_input.size(1)
+            tgt_mask = generate_square_subsequent_mask(tgt_seq_len).to(device)
+            
+            output = model(images, tgt_input, tgt_mask)
+            loss = criterion(output.reshape(-1, output.size(-1)), tgt_output.reshape(-1))
+            
+            epoch_loss += loss.item()
+    return epoch_loss / len(val_loader)
+
 # Beam search
-def beam_search(model, image, tokenizer, beam_width=5, max_seq_len=100):
+def beam_search(model, image, tokenizer, beam_width=5, max_seq_len=1000):
     model.eval()
     with torch.no_grad():
         encoder_outputs = model.encoder(image)
@@ -486,24 +532,57 @@ def make_predictions(model, tokenizer, test_folder, output_file, beam_width=5):
     for img_name in sorted(os.listdir(test_folder)):
         img_path = os.path.join(test_folder, img_name)
         print(f"Processing {img_path}")
-        image = Image.open(img_path).convert("RGB")
-        image = transform(image).unsqueeze(0).to(device)
-        
-        # Use beam search
-        best_sequence = beam_search(model, image, tokenizer, beam_width=beam_width)
-        decoded_latex = tokenizer.decode(best_sequence)
-        results.append(f"{img_name}: {decoded_latex}")
+        try:
+            image = Image.open(img_path).convert("L")  # 确保为灰度图像
+            image = transform(image).unsqueeze(0).to(device)
+            
+            # Use beam search
+            best_sequence = beam_search(model, image, tokenizer, beam_width=beam_width, max_seq_len=1000)
+            decoded_latex = tokenizer.decode(best_sequence)
+            results.append(f"{img_name}: {decoded_latex}")
+        except Exception as e:
+            print(f"Error processing {img_name}: {e}")
+            results.append(f"{img_name}: ERROR")
     
     with open(output_file, 'w') as f:
         f.write("\n".join(results))
-
+    print(f"Predictions saved to {output_file}")
 
 if __name__ == '__main__':
-    data_pq_file = 'dataset/hmer_train.parquet'
-    dictionary_dir = 'dataset/dictionary.txt'
-    saved_tokenizer_dir = 'dataset/custom_tokenizer.json'
-    test_img_base_dir = 'test/imgs/'
-    test_output_dir = 'results/test_results_densenet.txt'
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Handwritten Math Formula Recognition - Training with Validation')
+    parser.add_argument('--data_pq_file', type=str, default='dataset/parquets/training_data.parquet', help='Path to the training data parquet file')
+    parser.add_argument('--dictionary_dir', type=str, default='dataset/dictionary.txt', help='Path to the dictionary file')
+    parser.add_argument('--saved_tokenizer_dir', type=str, default='dataset/whole_tokenizer.json', help='Path to save/load the custom tokenizer')
+    parser.add_argument('--test_img_base_dir', type=str, default='test/imgs/', help='Path to the folder containing test images')
+    parser.add_argument('--test_output_dir', type=str, default='results/test_results_densenet_large.txt', help='Path to save the prediction results')
+    parser.add_argument('--hidden_dim', type=int, default=512, help='Hidden dimension size')
+    parser.add_argument('--num_layers', type=int, default=8, help='Number of transformer decoder layers')
+    parser.add_argument('--num_heads', type=int, default=16, help='Number of attention heads')
+    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training and validation')
+    parser.add_argument('--num_epochs', type=int, default=10, help='Number of training epochs') 
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for optimizer')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for optimizer')
+    parser.add_argument('--test_size', type=float, default=0.1, help='Proportion of the dataset to include in the validation split')
+    parser.add_argument('--random_state', type=int, default=5525, help='Random state for dataset splitting')
+
+    args = parser.parse_args()
+
+    data_pq_file = args.data_pq_file
+    dictionary_dir = args.dictionary_dir
+    saved_tokenizer_dir = args.saved_tokenizer_dir
+    test_img_base_dir = args.test_img_base_dir
+    test_output_dir = args.test_output_dir
+    hidden_dim = args.hidden_dim
+    num_layers = args.num_layers
+    num_heads = args.num_heads
+    batch_size = args.batch_size
+    num_epochs = args.num_epochs
+    learning_rate = args.learning_rate
+    weight_decay = args.weight_decay
+    test_size = args.test_size
+    random_state = args.random_state
 
     # Ensure the directories exist
     os.makedirs(os.path.dirname(test_output_dir), exist_ok=True)
@@ -518,9 +597,9 @@ if __name__ == '__main__':
         device = 'cpu'
     print(f'Using device: {device}')
 
-    # extract data details
-    data_df = prepare_datasets(data_pq_file)
-    captions = list(data_df['formula'])
+    # Extract data details and split into training and validation sets
+    train_df, val_df, global_max_len = prepare_datasets(data_pq_file, test_size=test_size, random_state=random_state)
+    captions = list(train_df['formula']) + list(val_df['formula'])
     
     # Check if the custom tokenizer exists, if not, create one
     if os.path.exists(saved_tokenizer_dir):
@@ -540,15 +619,27 @@ if __name__ == '__main__':
         )
     ])
 
-    # Create dataset and data loader
-    train_dataset = CROHMEDataset(df=data_df, tokenizer=tokenizer, transform=transform)
+    # Create datasets
+    train_dataset = CROHMEDataset(df=train_df, tokenizer=tokenizer, transform=transform, max_seq_len=global_max_len)
+    val_dataset = CROHMEDataset(df=val_df, tokenizer=tokenizer, transform=transform, max_seq_len=global_max_len)
 
     # 根据系统的 CPU 核心数动态设置 num_workers
     num_workers = min(8, multiprocessing.cpu_count())
+
+    # Create DataLoaders
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=8,
+        batch_size=batch_size,
         shuffle=True,
+        num_workers=num_workers,
+        collate_fn=create_collate_fn(tokenizer),
+        pin_memory=True if device == 'cuda' else False
+    )
+
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
         num_workers=num_workers,
         collate_fn=create_collate_fn(tokenizer),
         pin_memory=True if device == 'cuda' else False
@@ -556,37 +647,42 @@ if __name__ == '__main__':
 
     # Initialize the model, optimizer, and loss function
     vocab_size = tokenizer.get_vocab_size()
-    model = ImageToLatexModel(vocab_size, hidden_dim=256, num_layers=6, num_heads=8).to(device)
+    model = ImageToLatexModel(vocab_size, hidden_dim=hidden_dim, num_layers=num_layers, num_heads=num_heads, max_len=global_max_len).to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.token_to_id('[PAD]'))
 
-    best_loss = float('inf')
-    losses = []
+    best_val_loss = float('inf')
+    train_losses = []
+    val_losses = []
 
     # Training loop
-    num_epochs = 30
-    print('Training starts')
-    for epoch in tqdm(range(num_epochs)):
-        epoch_loss = train_one_epoch(model, train_dataloader, optimizer, criterion)
-        losses.append(epoch_loss)
+    print('---------------------------Training starts---------------------------')
+    for epoch in range(num_epochs):
+        train_loss = train_one_epoch(model, train_dataloader, optimizer, criterion)
+        val_loss = evaluate(model, val_dataloader, criterion)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
         
-        # Save the model if it achieves a better loss
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        # Save the model if it achieves a better validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             checkpoint_dir = "results/checkpoints"
             os.makedirs(checkpoint_dir, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth"))
             print(f"Model saved at epoch {epoch + 1}")
         
-        print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {epoch_loss:.4f}')
+        print(f'Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
     
     # Plot the loss over epochs and save the plot
-    plt.plot(range(1, num_epochs + 1), losses, 'o-')
-    plt.title('Training Loss Over Epochs')
+    plt.figure()
+    plt.plot(range(1, num_epochs + 1), train_losses, 'o-', label='Train Loss')
+    plt.plot(range(1, num_epochs + 1), val_losses, 'o-', label='Validation Loss')
+    plt.title('Training and Validation Loss Over Epochs')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.savefig('results/training_loss.png')
+    plt.legend()
+    plt.savefig('results/training_validation_loss.png')
 
     # Testing the trained model on new test images
     print("Testing model on test folder...")
