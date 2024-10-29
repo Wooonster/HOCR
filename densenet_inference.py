@@ -1,14 +1,33 @@
 import os
 import io
+import re
 import math
 import cv2
 import torch
+import warnings
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from tokenizers import Tokenizer
 from torchvision import transforms
 import numpy as np
+import pandas as pd
+import nltk
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+
+# nltk.download('punkt')  # for BLEU
+
+# ---------------------------
+# 读取数据
+# ---------------------------
+
+def read_datasets(data_pq_file):
+    df = pd.read_parquet(data_pq_file)
+    captions, img_names, img_bytes = df['formula'], df['filename'], df['image']
+    # assert len(captions) == len(img_names) == len(img_bytes), 'dataset parquet got errors'
+    if not len(captions) == len(img_names) == len(img_bytes):
+        warnings.warn('Warning! Dataset may got errors.')
+    return df
 
 # ---------------------------
 # 模型定义
@@ -155,7 +174,7 @@ class PositionalEncoding2D(nn.Module):
         return tensor
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=1000):
+    def __init__(self, d_model, max_len=1051):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -278,15 +297,22 @@ def beam_search(model, image, tokenizer, beam_width=5, max_seq_len=100):
                 break
         
         best_sequence = sequences[0]
-        return best_sequence[1:]  # 排除 [CLS] 标记
+        
+        # 移除 [CLS] 和 [SEP] 标记
+        if best_sequence[0] == tokenizer.token_to_id('[CLS]'):
+            best_sequence = best_sequence[1:]
+        if best_sequence and best_sequence[-1] == tokenizer.token_to_id('[SEP]'):
+            best_sequence = best_sequence[:-1]
+        
+        return best_sequence
 
 # ---------------------------
 # 预测函数
 # ---------------------------
 
-def make_predictions(model, tokenizer, test_folder, output_file, device, beam_width=5):
+def make_predictions(model, tokenizer, test_df, output_file, device, beam_width=5):
+    print('------------------------------ making predictions ------------------------------')
     model.eval()
-    results = []
     preprocess = PreprocessImage()
     transform = transforms.Compose([
         preprocess,
@@ -297,23 +323,118 @@ def make_predictions(model, tokenizer, test_folder, output_file, device, beam_wi
         )
     ])
     
-    for img_name in sorted(os.listdir(test_folder)):
-        img_path = os.path.join(test_folder, img_name)
-        print(f"Processing {img_path}")
+    results = []
+    
+    for idx, row in test_df.iterrows():
+        img_name = row['filename']
+        img_binary = row['image']
+        if isinstance(img_binary, dict):  # for im2latex
+            img_binary = img_binary['bytes']
+            if img_binary is None:
+                raise ValueError("The key 'bytes' is missing in img_binary dictionary.")
+        
+        print(f"Processing {img_name}")
         try:
-            image = Image.open(img_path).convert("L")  # 转换为灰度图像
+            # 将二进制数据转换为 PIL 图像
+            image = Image.open(io.BytesIO(img_binary)).convert("L")  # 确保为灰度图像
             image = transform(image).unsqueeze(0).to(device)
             
+            # 使用 Beam Search 生成 LaTeX 序列
             best_sequence = beam_search(model, image, tokenizer, beam_width=beam_width)
             decoded_latex = tokenizer.decode(best_sequence)
+            print(f"Decoded LaTeX: {decoded_latex}")
             results.append(f"{img_name}: {decoded_latex}")
         except Exception as e:
             print(f"Error processing {img_name}: {e}")
             results.append(f"{img_name}: ERROR")
     
-    with open(output_file, 'w') as f:
-        f.write("\n".join(results))
-    print(f"Predictions saved to {output_file}")
+    # 保存结果到输出文件
+    try:
+        with open(output_file, 'w') as f:
+            f.write("\n".join(results))
+        print(f"Predictions saved to {output_file}")
+    except Exception as e:
+        print(f"Error saving predictions: {e}")
+
+# ---------------------------
+# 计算得分
+# ---------------------------
+def compute_bleu(predict_res, test_df, test_data_name, max_n=4):
+    """
+    计算平均 BLEU 分数。
+
+    参数:
+        predict_res (str): 模型生成的 LaTeX 表达式文件路径，每行格式为 'filename: prediction'。
+        test_df (pd.DataFrame): 包含真实 LaTeX 表达式的 DataFrame，至少包含 'filename' 和 'formula' 列。
+        max_n (int): 最大的 n-gram 级别，通常为 4。
+
+    返回:
+        float: 平均 BLEU 分数，范围为 0 到 1 之间。
+    """
+    print('------------------------------ Calculating the BLEU score ------------------------------')
+
+    pairs = []
+    
+    # 读取 predictions 和 label
+    with open(predict_res, 'r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue  # 跳过空行
+            if ':' not in line:
+                warnings.warn(f"Line {line_num} in prediction file does not contain ':'. Skipping.")
+                continue
+            file, pred = line.split(':', 1)  # 只对第一个 : 分割
+            file = file.strip()
+            pred = pred.strip()
+            if not file or not pred:
+                warnings.warn(f"Line {line_num} in prediction file has empty filename or prediction. Skipping.")
+                continue
+            # 从 test_df 中获取对应的 label
+            label_series = test_df.loc[test_df["filename"] == file, "formula"]
+            if label_series.empty:
+                warnings.warn(f"Filename '{file}' not found in test_df. Skipping.")
+                continue
+            label_formula = label_series.values[0]
+            pairs.append((pred, label_formula))
+
+    if not pairs:
+        raise ValueError("No valid prediction-label pairs found. Please check the prediction file and test_df.")
+
+    total_bleu = 0.0
+    smooth = SmoothingFunction().method1  # 使用平滑方法处理短句
+
+    for idx, (pred, gt) in enumerate(pairs, 1):
+        gt = ' '.join(c for st in gt.split() for c in list(st))
+        
+        candidate = list(pred)
+        reference = list(gt)
+        
+        if idx <= 5:
+            print(f'Sample {idx}:')
+            print(f'  Candidate: "{pred}"')
+            print(f'  Reference: "{gt}"')
+        
+        # 计算 BLEU 分数
+        bleu_score = sentence_bleu(
+            [reference],  # references 是 list of references, 每个 reference 是一个 list of tokens
+            candidate,    # candidate 是 list of tokens
+            weights=[1/max_n]*max_n,  # 均等的 n-gram 权重
+            smoothing_function=smooth
+        )
+        total_bleu += bleu_score
+
+    average_bleu = total_bleu / len(pairs)
+    print(f'The average BLEU score is {average_bleu:.4f}')
+
+    # 确保结果目录存在
+    output_dir = os.path.dirname('results/test_res/BLEU_scores.txt')
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 将 BLEU 分数写入文件
+    with open('results/test_res/BLEU_scores.txt', 'a', encoding='utf-8') as f:
+        f.write(f'The average BLEU score on {test_data_name} is {average_bleu:.4f}.\n')
+    print(f'Predictions saved to results/test_res/BLEU_scores.txt')
 
 # ---------------------------
 # 主程序
@@ -325,7 +446,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Handwritten Math Formula Recognition - Inference Script')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to the model checkpoint (.pth file)')
     parser.add_argument('--tokenizer', type=str, required=True, help='Path to the custom tokenizer (.json file)')
-    parser.add_argument('--test_folder', type=str, required=True, help='Path to the folder containing test images')
+    parser.add_argument('--test_parquet_path', type=str, required=True, help='Path to the test data Parquet file')
+    parser.add_argument('--test_dataset_name', type=str, required=True, help='The name of the testing dataset')
     parser.add_argument('--output_file', type=str, required=True, help='Path to save the prediction results')
     parser.add_argument('--hidden_dim', type=int, default=512, help='Hidden dimension size')
     parser.add_argument('--num_layers', type=int, default=8, help='Number of transformer decoder layers')
@@ -358,10 +480,23 @@ if __name__ == '__main__':
     if os.path.exists(args.checkpoint):
         print(f'Loading model weights from {args.checkpoint}')
         state_dict = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(state_dict)
-        print('Model weights loaded.')
+        # 忽略与推理时模型不匹配的参数（如 BatchNorm 统计量等）
+        try:
+            model.load_state_dict(state_dict)
+            print('Model weights loaded successfully.')
+        except RuntimeError as e:
+            print(f"Error loading state_dict: {e}")
+            # 如果有必要，可以加载严格不匹配的权重
+            model.load_state_dict(state_dict, strict=False)
+            print('Model weights loaded with strict=False.')
     else:
         raise FileNotFoundError(f"Checkpoint file '{args.checkpoint}' not found.")
 
+    # 读取数据
+    test_dataset_df = read_datasets(args.test_parquet_path)
+
     # 执行预测
-    make_predictions(model, tokenizer, args.test_folder, args.output_file, device, beam_width=5)
+    make_predictions(model, tokenizer, test_dataset_df, args.output_file, device, beam_width=5)
+    
+    # 计算 BLEU
+    compute_bleu(predict_res=args.output_file, test_df=test_dataset_df, test_data_name=args.test_dataset_name)

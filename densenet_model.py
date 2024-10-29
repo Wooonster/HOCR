@@ -22,7 +22,8 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from torch.utils.data import DataLoader, Dataset, random_split
 from sklearn.model_selection import train_test_split  # 新增
-from torch.cuda.amp import autocast, GradScaler  # 修改导入路径
+from torch.cuda.amp import autocast, GradScaler
+from torch.utils.tensorboard import SummaryWriter
 
 # 设置随机种子以保证可复现性
 def set_seed(seed):
@@ -41,7 +42,7 @@ def prepare_datasets(data_pq_file, test_size=0.1, random_state=42):
 
     # 将数据集划分为训练集和验证集
     train_df, val_df = train_test_split(df, test_size=test_size, random_state=random_state)
-    
+     
     # 计算最大序列长度
     train_max_len = train_df['formula'].apply(lambda x: len(x)).max()
     val_max_len = val_df['formula'].apply(lambda x: len(x)).max()
@@ -317,7 +318,7 @@ class StackedDenseNetEncoder(nn.Module):
         x = x.permute(0, 2, 1)
         return x
 
-" 2D Positional Encoding"
+" 2D Positional Encoding "
 class PositionalEncoding2D(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
@@ -391,7 +392,7 @@ class TransformerDecoder(nn.Module):
 
 " Encoder using stacked DenseNet "
 class ImageToLatexModel(nn.Module):
-    def __init__(self, vocab_size, hidden_dim=256, num_layers=4, num_heads=8, max_len=1000):
+    def __init__(self, vocab_size, hidden_dim=256, num_layers=4, num_heads=8, max_len=1051):
         super().__init__()
         self.encoder = StackedDenseNetEncoder(
             num_densenets=3,
@@ -552,16 +553,16 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Handwritten Math Formula Recognition - Training with Validation')
-    parser.add_argument('--data_pq_file', type=str, default='dataset/parquets/training_data.parquet', help='Path to the training data parquet file')
+    parser.add_argument('--data_pq_file', type=str, default='dataset/train_parquets/training_data.parquet', help='Path to the training data parquet file')
     parser.add_argument('--dictionary_dir', type=str, default='dataset/dictionary.txt', help='Path to the dictionary file')
     parser.add_argument('--saved_tokenizer_dir', type=str, default='dataset/whole_tokenizer.json', help='Path to save/load the custom tokenizer')
-    parser.add_argument('--test_img_base_dir', type=str, default='test/imgs/', help='Path to the folder containing test images')
-    parser.add_argument('--test_output_dir', type=str, default='results/test_results_densenet_large.txt', help='Path to save the prediction results')
+    parser.add_argument('--test_img_base_dir', type=str, default='test/imgs/', help='Path to the folder containing test images')  # 添加 test_img_base_dir
+    parser.add_argument('--test_output_dir', type=str, default='results/test_results_densenet_large.txt', help='Path to save the prediction results')  # 添加 test_output_dir
     parser.add_argument('--hidden_dim', type=int, default=512, help='Hidden dimension size')
     parser.add_argument('--num_layers', type=int, default=8, help='Number of transformer decoder layers')
     parser.add_argument('--num_heads', type=int, default=16, help='Number of attention heads')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training and validation')
-    parser.add_argument('--num_epochs', type=int, default=10, help='Number of training epochs') 
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')  # 增大 batch_size
+    parser.add_argument('--num_epochs', type=int, default=40, help='Number of training epochs') 
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for optimizer')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for optimizer')
     parser.add_argument('--test_size', type=float, default=0.1, help='Proportion of the dataset to include in the validation split')
@@ -624,7 +625,7 @@ if __name__ == '__main__':
     val_dataset = CROHMEDataset(df=val_df, tokenizer=tokenizer, transform=transform, max_seq_len=global_max_len)
 
     # 根据系统的 CPU 核心数动态设置 num_workers
-    num_workers = min(8, multiprocessing.cpu_count())
+    num_workers = 16
 
     # Create DataLoaders
     train_dataloader = DataLoader(
@@ -633,7 +634,8 @@ if __name__ == '__main__':
         shuffle=True,
         num_workers=num_workers,
         collate_fn=create_collate_fn(tokenizer),
-        pin_memory=True if device == 'cuda' else False
+        pin_memory=True if device == 'cuda' else False,
+        persistent_workers=True if device == 'cuda' else False  # 持久化 workers 提高数据加载效率
     )
 
     val_dataloader = DataLoader(
@@ -642,7 +644,8 @@ if __name__ == '__main__':
         shuffle=False,
         num_workers=num_workers,
         collate_fn=create_collate_fn(tokenizer),
-        pin_memory=True if device == 'cuda' else False
+        pin_memory=True if device == 'cuda' else False,
+        persistent_workers=True if device == 'cuda' else False
     )
 
     # Initialize the model, optimizer, and loss function
@@ -652,12 +655,15 @@ if __name__ == '__main__':
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.token_to_id('[PAD]'))
 
+    # tensor board
+    writer = SummaryWriter('runs/latex_recognition_experiment')
+
     best_val_loss = float('inf')
     train_losses = []
     val_losses = []
 
     # Training loop
-    print('---------------------------Training starts---------------------------')
+    print('----------------------------------- Training starts -----------------------------------')
     for epoch in range(num_epochs):
         train_loss = train_one_epoch(model, train_dataloader, optimizer, criterion)
         val_loss = evaluate(model, val_dataloader, criterion)
@@ -672,9 +678,14 @@ if __name__ == '__main__':
             torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_model.pth"))
             print(f"Model saved at epoch {epoch + 1}")
         
+        # 3. 记录指标到 TensorBoard
+        writer.add_scalar('Loss/Train', train_loss, epoch)
+        writer.add_scalar('Loss/Validation', val_loss, epoch)
+        
         print(f'Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
     
     # Plot the loss over epochs and save the plot
+    print('----------------------------------- Plot the losses -----------------------------------')
     plt.figure()
     plt.plot(range(1, num_epochs + 1), train_losses, 'o-', label='Train Loss')
     plt.plot(range(1, num_epochs + 1), val_losses, 'o-', label='Validation Loss')
@@ -684,10 +695,12 @@ if __name__ == '__main__':
     plt.legend()
     plt.savefig('results/training_validation_loss.png')
 
+    writer.close()
+
     # Testing the trained model on new test images
-    print("Testing model on test folder...")
-    # Load the best model
-    checkpoint_path = os.path.join("results", "checkpoints", "best_model.pth")
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    make_predictions(model, tokenizer=tokenizer, test_folder=test_img_base_dir, output_file=test_output_dir)
-    print(f"Test results saved to {test_output_dir}")
+    # print("Testing model on test folder...")
+    # # Load the best model
+    # checkpoint_path = os.path.join("results", "checkpoints", "best_model.pth")
+    # model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    # make_predictions(model, tokenizer=tokenizer, test_folder=test_img_base_dir, output_file=test_output_dir)
+    # print(f"Test results saved to {test_output_dir}")
