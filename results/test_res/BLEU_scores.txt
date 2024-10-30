@@ -1,0 +1,2 @@
+The average BLEU score on HME100K is 0.8539.
+The average BLEU score on IM2LATEX is 0.7900.
