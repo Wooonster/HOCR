@@ -148,8 +148,12 @@ The training loss and validation loss from training 40 epochs, using DenseNet + 
 
 - The average BLEU score on HME100K is 0.8539.
 - The average BLEU score on IM2LATEX is 0.7900.
+- The average BLEU score on M2E is 0.7805.
+
 
 ### ExpRate
 
 - The average ExpRate scores on HME100K is 47.4946%,  (≤1 error): 55.4558%,  (≤2 errors): 62.42%.
 - The average ExpRate scores on IM2LATEX is 9.4567%,  (≤1 error): 10.2349%,  (≤2 errors): 13.82%.
+- The average ExpRate scores on M2E is 19.1487%,  (≤1 error): 23.1748%,  (≤2 errors): 28.15%.
+

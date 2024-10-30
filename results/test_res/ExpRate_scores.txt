@@ -1,2 +1,3 @@
 The average ExpRate scores on HME100K is 47.4946%,  (≤1 error): 55.4558%,  (≤2 errors): 62.42%.
 The average ExpRate scores on IM2LATEX is 9.4567%,  (≤1 error): 10.2349%,  (≤2 errors): 13.82%.
+The average ExpRate scores on M2E is 19.1487%,  (≤1 error): 23.1748%,  (≤2 errors): 28.15%.
