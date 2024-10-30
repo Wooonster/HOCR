@@ -58,9 +58,9 @@ The project expects the dataset to be in a Parquet file (.parquet) with the foll
 
 ### Prerequisites
 
-Python: 3.7 or higher
-PyTorch: 1.8.0 or higher
-CUDA: (Optional) For GPU acceleration
+Python: 3.10 or higher
+PyTorch: 2.1.2 or higher
+CUDA: cu118 For GPU acceleration
 
 
 ### init
@@ -69,36 +69,87 @@ The versions of the packages listed in `requirements.txt` are not guaranteed to 
 
 `pip install -r requirements.txt`
 
-If requirements.txt is not provided, install the necessary packages manually:
-
-`pip install torch torchvision tokenizers pillow opencv-python matplotlib numpy pandas tqdm`
-
 ## Run
 
-### Dataset preparing
 
-### Run the Training Script
+### Training
 
-Execute the training process using the provided script:
+Execute the training script by `python densenet_model.py [OPTIONS]`.
+
+The options are:
+| Argument               | Type    | Default Value                                      | Description                                      |
+|------------------------|---------|----------------------------------------------------|--------------------------------------------------|
+| `--data_pq_file`       | `str`   | `dataset/train_parquets/training_data.parquet`     | Path to the training data parquet file           |
+| `--dictionary_dir`     | `str`   | `dataset/dictionary.txt`                           | Path to the dictionary file                      |
+| `--saved_tokenizer_dir`| `str`   | `dataset/whole_tokenizer.json`                     | Path to save/load the custom tokenizer           |
+| `--hidden_dim`         | `int`   | `512`                                              | Hidden dimension size                            |
+| `--num_layers`         | `int`   | `8`                                                | Number of transformer decoder layers             |
+| `--num_heads`          | `int`   | `16`                                               | Number of attention heads                        |
+| `--batch_size`         | `int`   | `32`                                               | Batch size for training and validation           |
+| `--num_epochs`         | `int`   | `40`                                               | Number of training epochs                        |
+| `--learning_rate`      | `float` | `1e-4`                                             | Learning rate for optimizer                      |
+| `--weight_decay`       | `float` | `1e-4`                                             | Weight decay for optimizer                       |
+| `--test_size`          | `float` | `0.1`                                              | Proportion of dataset for validation split       |
+| `--random_state`       | `int`   | `5525`                                             | Random state for dataset splitting               |
+
 
 ```bash
-python train.py --data_pq_file path/to/hmer_train.parquet \
-                --dictionary_dir path/to/dictionary.txt \
-                --save_tokenizer_dir path/to/custom_tokenizer.json \
-                --checkpoint_dir path/to/save/checkpoints \
-                --num_epochs 30 \
-                --batch_size 8 \
-                --learning_rate 3e-4 \
-                --weight_decay 1e-4
+python densenet_model.py --data_pq_file path/to/training_data.parquet \
+                         --dictionary_dir path/to/dictionary.txt \
+                         --saved_tokenizer_dir path/to/custom_tokenizer.json \
+                         --hidden_dim 256 \
+                         --num_layers 6 \
+                         --num_heads 8 \
+                         --batch_size 64 \
+                         --num_epochs 50 \
+                         --learning_rate 5e-5 \
+                         --weight_decay 1e-4
+
 ```
 
 ### Inference
 
-Ensure you have the test images.
+Ensure you have the test datasets, `python densenet_inference.py`.
+
+Options:
+| Argument               | Type    | Default Value                                      | Description                                      |
+|------------------------|---------|----------------------------------------------------|--------------------------------------------------|
+| `--checkpoint`         | `str`   | **Required**                                       | Path to the model checkpoint (.pth file)         |
+| `--tokenizer`          | `str`   | **Required**                                       | Path to the custom tokenizer (.json file)        |
+| `--test_parquet_path`  | `str`   | **Required**                                       | Path to the test data Parquet file               |
+| `--test_dataset_name`  | `str`   | **Required**                                       | The name of the testing dataset                  |
+| `--output_file`        | `str`   | **Required**                                       | Path to save the prediction results              |
+| `--hidden_dim`         | `int`   | `512`                                              | Hidden dimension size                            |
+| `--num_layers`         | `int`   | `8`                                                | Number of transformer decoder layers             |
+| `--num_heads`          | `int`   | `16`                                               | Number of attention heads                        |
+
 
 ```bash
-python predict.py --checkpoint path/to/best_model.pth \
-                  --tokenizer path/to/custom_tokenizer.json \
-                  --test_folder path/to/test/imgs/ \
-                  --output_file path/to/results/test_results_densenet.txt
+python densenet_inference.py --checkpoint path/to/model_checkpoint.pth \
+                             --tokenizer path/to/custom_tokenizer.json \
+                             --test_parquet_path path/to/test_data.parquet \
+                             --test_dataset_name my_test_dataset \
+                             --output_file path/to/save_predictions.csv \
+                             --hidden_dim 256 \
+                             --num_layers 6 \
+                             --num_heads 8
 ```
+**Keep dimension same with the checkpoints**
+
+
+## Results
+
+### Loss
+
+The training loss and validation loss from training 40 epochs, using DenseNet + Transformer:
+![training loss and validation loss](results/training_validation_loss.png)
+
+### BLEU
+
+- The average BLEU score on HME100K is 0.8539.
+- The average BLEU score on IM2LATEX is 0.7900.
+
+### ExpRate
+
+- The average ExpRate scores on HME100K is 47.4946%,  (≤1 error): 55.4558%,  (≤2 errors): 62.42%.
+- The average ExpRate scores on IM2LATEX is 9.4567%,  (≤1 error): 10.2349%,  (≤2 errors): 13.82%.
