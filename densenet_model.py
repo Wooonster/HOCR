@@ -556,8 +556,6 @@ if __name__ == '__main__':
     parser.add_argument('--data_pq_file', type=str, default='dataset/train_parquets/training_data.parquet', help='Path to the training data parquet file')
     parser.add_argument('--dictionary_dir', type=str, default='dataset/dictionary.txt', help='Path to the dictionary file')
     parser.add_argument('--saved_tokenizer_dir', type=str, default='dataset/whole_tokenizer.json', help='Path to save/load the custom tokenizer')
-    parser.add_argument('--test_img_base_dir', type=str, default='test/imgs/', help='Path to the folder containing test images')  # 添加 test_img_base_dir
-    parser.add_argument('--test_output_dir', type=str, default='results/test_results_densenet_large.txt', help='Path to save the prediction results')  # 添加 test_output_dir
     parser.add_argument('--hidden_dim', type=int, default=512, help='Hidden dimension size')
     parser.add_argument('--num_layers', type=int, default=8, help='Number of transformer decoder layers')
     parser.add_argument('--num_heads', type=int, default=16, help='Number of attention heads')
@@ -573,8 +571,6 @@ if __name__ == '__main__':
     data_pq_file = args.data_pq_file
     dictionary_dir = args.dictionary_dir
     saved_tokenizer_dir = args.saved_tokenizer_dir
-    test_img_base_dir = args.test_img_base_dir
-    test_output_dir = args.test_output_dir
     hidden_dim = args.hidden_dim
     num_layers = args.num_layers
     num_heads = args.num_heads
@@ -696,11 +692,3 @@ if __name__ == '__main__':
     plt.savefig('results/training_validation_loss.png')
 
     writer.close()
-
-    # Testing the trained model on new test images
-    # print("Testing model on test folder...")
-    # # Load the best model
-    # checkpoint_path = os.path.join("results", "checkpoints", "best_model.pth")
-    # model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    # make_predictions(model, tokenizer=tokenizer, test_folder=test_img_base_dir, output_file=test_output_dir)
-    # print(f"Test results saved to {test_output_dir}")
