@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from Levenshtein import distance
 
 # nltk.download('punkt')  # for BLEU
 
@@ -309,7 +310,6 @@ def beam_search(model, image, tokenizer, beam_width=5, max_seq_len=100):
 # ---------------------------
 # 预测函数
 # ---------------------------
-
 def make_predictions(model, tokenizer, test_df, output_file, device, beam_width=5):
     print('------------------------------ making predictions ------------------------------')
     model.eval()
@@ -359,20 +359,8 @@ def make_predictions(model, tokenizer, test_df, output_file, device, beam_width=
 # ---------------------------
 # 计算得分
 # ---------------------------
-def compute_bleu(predict_res, test_df, test_data_name, max_n=4):
-    """
-    计算平均 BLEU 分数。
 
-    参数:
-        predict_res (str): 模型生成的 LaTeX 表达式文件路径，每行格式为 'filename: prediction'。
-        test_df (pd.DataFrame): 包含真实 LaTeX 表达式的 DataFrame，至少包含 'filename' 和 'formula' 列。
-        max_n (int): 最大的 n-gram 级别，通常为 4。
-
-    返回:
-        float: 平均 BLEU 分数，范围为 0 到 1 之间。
-    """
-    print('------------------------------ Calculating the BLEU score ------------------------------')
-
+def combine_pred_gt(predict_res, test_df):
     pairs = []
     
     # 读取 predictions 和 label
@@ -397,7 +385,22 @@ def compute_bleu(predict_res, test_df, test_data_name, max_n=4):
                 continue
             label_formula = label_series.values[0]
             pairs.append((pred, label_formula))
+    return pairs
 
+# 计算 BLEU
+def compute_bleu(pairs, test_data_name, max_n=4):
+    """
+    计算平均 BLEU 分数。
+
+    参数:
+        predict_res (str): 模型生成的 LaTeX 表达式文件路径，每行格式为 'filename: prediction'。
+        test_df (pd.DataFrame): 包含真实 LaTeX 表达式的 DataFrame，至少包含 'filename' 和 'formula' 列。
+        max_n (int): 最大的 n-gram 级别，通常为 4。
+
+    返回:
+        float: 平均 BLEU 分数，范围为 0 到 1 之间。
+    """
+    print('------------------------------ Calculating the BLEU score ------------------------------')
     if not pairs:
         raise ValueError("No valid prediction-label pairs found. Please check the prediction file and test_df.")
 
@@ -435,6 +438,51 @@ def compute_bleu(predict_res, test_df, test_data_name, max_n=4):
     with open('results/test_res/BLEU_scores.txt', 'a', encoding='utf-8') as f:
         f.write(f'The average BLEU score on {test_data_name} is {average_bleu:.4f}.\n')
     print(f'Predictions saved to results/test_res/BLEU_scores.txt')
+
+# 计算 ExpRate 和 ≤1、≤2 的准确率
+def compute_exprate(pairs, test_data_name=None):
+    print('------------------------------ Calculating the Exp Rate ------------------------------')
+    if not pairs:
+        raise ValueError("No valid prediction-label pairs found. Please check the prediction file and test_df.")
+
+    length = len(pairs)
+    correct_count = 0
+    correct_within_1 = 0
+    correct_within_2 = 0
+    
+    # 遍历预测-标签对
+    for pred, gt in pairs:
+        # 将标签字符串分解成单字符
+        gt = ' '.join(c for st in gt.split() for c in list(st))
+        
+        # 计算完全匹配
+        if pred == gt:
+            correct_count += 1
+        else:
+            # 计算编辑距离
+            dist = distance(pred, gt)
+            if dist <= 1:
+                correct_within_1 += 1
+            if dist <= 2:
+                correct_within_2 += 1
+
+    # 计算各项指标
+    exprate = (correct_count / length) * 100
+    exprate_within_1 = ((correct_count + correct_within_1) / length) * 100
+    exprate_within_2 = ((correct_count + correct_within_2) / length) * 100
+
+    print(f"ExpRate: {exprate:.2f}%")
+    print(f"ExpRate (≤1 error): {exprate_within_1:.2f}%")
+    print(f"ExpRate (≤2 errors): {exprate_within_2:.2f}%")
+
+    # 确保结果目录存在
+    output_dir = os.path.dirname('results/test_res/ExpRate_scores.txt')
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 将分数写入文件
+    with open('results/test_res/ExpRate_scores.txt', 'a', encoding='utf-8') as f:
+        f.write(f'The average ExpRate scores on {test_data_name} is {exprate:.4f}%,  (≤1 error): {exprate_within_1:.4f}%,  (≤2 errors): {exprate_within_2:.2f}%.\n')
+    print(f'Predictions saved to results/test_res/ExpRate_scores.txt')
 
 # ---------------------------
 # 主程序
@@ -494,9 +542,14 @@ if __name__ == '__main__':
 
     # 读取数据
     test_dataset_df = read_datasets(args.test_parquet_path)
-
+    
     # 执行预测
     make_predictions(model, tokenizer, test_dataset_df, args.output_file, device, beam_width=5)
     
+
+    pred_gt_pair = combine_pred_gt(args.output_file, test_dataset_df)
     # 计算 BLEU
-    compute_bleu(predict_res=args.output_file, test_df=test_dataset_df, test_data_name=args.test_dataset_name)
+    compute_bleu(pairs=pred_gt_pair, test_data_name=args.test_dataset_name)
+
+    # 计算 ExpRate
+    compute_exprate(pairs=pred_gt_pair, test_data_name=args.test_dataset_name)
