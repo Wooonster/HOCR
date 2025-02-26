@@ -5,7 +5,14 @@ dataset/im2latex_100k
 dataset/m2e
 dataset/all_parques
 dataset/*.parquet
+dataset/ft_data/
 test/
 results/checkpoints/
 old_vit.py
 *.zip
+finetune/crohme/
+finetune/vlm/
+finetune/*.zip
+finetune/ft_model/
+finetune/output/
+finetune/swanlog/
