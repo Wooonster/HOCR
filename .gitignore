@@ -11,7 +11,8 @@ results/checkpoints/
 old_vit.py
 *.zip
 finetune/crohme/
-finetune/vlm/
+finetune/vl7b/
+finetune/vl3b/
 finetune/*.zip
 finetune/ft_model/
 finetune/output/
