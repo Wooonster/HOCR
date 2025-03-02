@@ -30,7 +30,7 @@ def extract_img(pkl_file: str, save_dir: str=None):
         print(f"Saved image: {output_path}")
 
 
-# extract_img(pkl_file='./crohme/2019/images.pkl', save_dir='../dataset/ft_data/')
+extract_img(pkl_file='/root/autodl-tmp/crohme/2019/images.pkl', save_dir='../dataset/ft_data/')
 
 def build_instruct_dataset(cap_text):
     with open(cap_text, 'r') as f:
@@ -63,5 +63,5 @@ def build_instruct_dataset(cap_text):
         json.dump(cvt_dataset, f, ensure_ascii=False, indent=2)
     
 
-build_instruct_dataset(cap_text='./crohme/2019/caption.txt')
+# build_instruct_dataset(cap_text='./crohme/2019/caption.txt')
 # print(data[:1], len(data))

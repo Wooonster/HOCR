@@ -17,3 +17,6 @@ finetune/*.zip
 finetune/ft_model/
 finetune/output/
 finetune/swanlog/
+*/.ipynb_checkpoints/
+finetune/distill/
+.ipynb_checkpoints/

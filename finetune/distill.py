@@ -161,6 +161,7 @@ if __name__ == '__main__':
     )
     model = get_peft_model(model, lora_config)
     model.cuda()
+    print('student model params')
     print(model.print_trainable_parameters())
 
     # teacher model
@@ -169,18 +170,20 @@ if __name__ == '__main__':
         attn_implementation="flash_attention_2", device_map="auto"
     )
     teacher_model = PeftModel.from_pretrained(
-        teacher_model, model_id="./ft_model/Qwen2.5-vl-7b-instruct-awq/checkpoint-134", 
+        teacher_model, model_id="./output/Qwen2-VL-7B/checkpoint-134/", 
         config=teacher_lora_config
     )
     teacher_model.cuda()
     teacher_model.eval()
+    print('teacher model params')
+    print(teacher_model.print_trainable_parameters())
 
     tokenizer = AutoTokenizer.from_pretrained(teacher_save_dir, trust_remote=True)
     processor = AutoProcessor.from_pretrained(teacher_save_dir)
 
     # dataset prepare
     def preprocess_func(example):
-        MAX_LENGTH = 8192
+        MAX_LENGTH = 4096
         input_ids, attention_mask, labels = [], [], []
         url = example["message"][0]["conversation"][0]['url']
         caption = example["message"][0]["conversation"][1]['caption']
@@ -195,13 +198,13 @@ if __name__ == '__main__':
                 "content": [
                     {
                         "type": "text",
-                        "text": "Recognize the equation in the image, write its LaTeX code between $$\t and \t$$"
+                        "text": "Recognize the equation in the image, write its LaTeX code between $$\n and \n$$"
                     },
                     {
                         "type": "image",
                         "image": url,
-                        "resized_height": 280,
-                        "resized_width": 280,
+                        "resized_height": 128,
+                        "resized_width": 128,
                     },
                 ]
             },
@@ -226,6 +229,7 @@ if __name__ == '__main__':
             padding=True,
             return_tensors='pt'
         )
+        inputs = inputs.to('cuda')
         inputs = {key: value.tolist() for key, value in inputs.items()}
         instruction = inputs
         response = tokenizer(f'{caption}', add_special_tokens=False)
@@ -272,7 +276,7 @@ if __name__ == '__main__':
             "model": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
             "dataset": "https://disk.pku.edu.cn/anyshare/en-us/link/AAF10CCC4D539543F68847A9010C607139?_tb=none&expires_at=1970-01-01T08%3A00%3A00%2B08%3A00&item_type=&password_required=false&title=HMER%20Dataset&type=anonymous",
             "github": "https://github.com/Wooonster/HOCR",
-            "prompt": "Recognize the equation in the image, write its LaTeX code between $$\t and \t$$",
+            "prompt": "Recognize the equation in the image, write its LaTeX code between $$\n and \n$$",
             "train_data_number": len(train_data),
             "lora_rank": 64,
             "lora_alpha": 16,
