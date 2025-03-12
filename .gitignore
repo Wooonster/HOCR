@@ -20,3 +20,4 @@ finetune/swanlog/
 */.ipynb_checkpoints/
 finetune/distill/
 .ipynb_checkpoints/
+__pycache__
