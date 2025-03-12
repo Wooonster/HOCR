@@ -16,3 +16,4 @@ pandas
 Pillow
 peft
 nltk
+Levenshtein
