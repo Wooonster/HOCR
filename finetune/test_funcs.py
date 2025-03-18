@@ -6,12 +6,12 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.metrics.distance import edit_distance
 
 DASH = '-' * 50
-test_data_dir = './data/ft_data_test.json'
-test_data = defaultdict()
-with open(test_data_dir, 'r', encoding='utf-8') as f:
-    data = json.laod(f)
-    for d in data:
-        test_data[d['message'][0]['conversation'][0]['url']] = d['message'][0]['conversation'][0]['caption']
+# test_data_dir = './data/ft_data_test.json'
+# test_data = defaultdict()
+# with open(test_data_dir, 'r', encoding='utf-8') as f:
+#     data = json.laod(f)
+#     for d in data:
+#         test_data[d['message'][0]['conversation'][0]['url']] = d['message'][0]['conversation'][0]['caption']
 
 def pre_process(txt):
     """
@@ -50,11 +50,7 @@ def compute_bleu(preds, max_n=4):
     total_bleu = 0.0
     count = 0
     
-    for url, pred_code in preds.items():
-        if url not in test_data:
-            continue
-        ref_code = test_data[url]
-        
+    for _, pred_code, ref_code in preds.items():
         pred_processed = pre_process(pred_code)
         ref_processed = pre_process(ref_code)
         
@@ -94,14 +90,12 @@ def compute_exprate(preds):
 
     # 根据 URL 匹配，构造预测和标签的对
     pairs = []
-    for url, pred_code in preds.items():
-        if url in test_data:
-            caption_code = test_data[url]
-            pred_processed = pre_process(pred_code)
-            caption_processed = pre_process(caption_code)
-            pairs.append((pred_processed, caption_processed))
+    for _, pred_code, ref_code in preds.items():
+        pred_processed = pre_process(pred_code)
+        ref_processed = pre_process(ref_code)
+        pairs.append((pred_processed, ref_processed))
 
-    print(pairs)
+    # print(pairs)
     
     if not pairs:
         raise ValueError("No valid prediction-label pairs found. Please check preds and test_data.")
@@ -113,17 +107,17 @@ def compute_exprate(preds):
     correct_within_2 = 0
     
     # 遍历预测-标签对，统一将两者转换为字符序列（每个字符之间以空格分隔）
-    for pred, gt in pairs:
+    for pred, ref in pairs:
         # 将字符串转换为单字符列表后再用空格连接
         pred_chars = ' '.join(list(pred))
-        gt_chars = ' '.join(list(gt))
+        ref_chars = ' '.join(list(ref))
 
         # print((pred_chars, gt_chars))
         
-        if pred_chars == gt_chars:
+        if pred_chars == ref_chars:
             correct_count += 1
         else:
-            dist = edit_distance(pred_chars, gt_chars)
+            dist = edit_distance(pred_chars, ref_chars)
             if dist <= 1:
                 correct_within_1 += 1
             if dist <= 2:
