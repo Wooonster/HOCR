@@ -6,12 +6,6 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.metrics.distance import edit_distance
 
 DASH = '-' * 50
-# test_data_dir = './data/ft_data_test.json'
-# test_data = defaultdict()
-# with open(test_data_dir, 'r', encoding='utf-8') as f:
-#     data = json.laod(f)
-#     for d in data:
-#         test_data[d['message'][0]['conversation'][0]['url']] = d['message'][0]['conversation'][0]['caption']
 
 def pre_process(txt):
     """
@@ -19,6 +13,12 @@ def pre_process(txt):
         1. check and remove "$$\t" and "\t$$" at the beginning and the end of pred_code and caption_code
         2. remove all " "
     """
+    
+    if txt.startswith("```latex\n"):
+        txt = txt[len("```latex\n"):]
+    if txt.endswith("\n```"):
+        txt = txt[:-len("\n```")]
+    
     if txt.startswith("$$\t"):
         txt = txt[len("\t$$"):]
     if txt.endswith("\t$$"):
@@ -35,11 +35,8 @@ def compute_bleu(preds, max_n=4):
     3. compute the BLEU scores
 
     args:
-        preds (dict): prediction results from different models, 
-            preds: {'url': 'predict latext code'}
+        preds (list): url, prediction results from different models, and ground truth labels
         max_n (int):  maximum n-gram level, set default to 4
-
-        global arg: test_data: {'url': 'caption latext code'}, the correct latext code
 
     return:
         float: average BLEU scores, ranging from 0 to 1
@@ -49,14 +46,16 @@ def compute_bleu(preds, max_n=4):
     cc = SmoothingFunction()
     total_bleu = 0.0
     count = 0
+
+    pred_processed = [pre_process(pred[1]) for pred in preds]
+    ref_processed = [pre_process(pred[2]) for pred in preds]
+    print([f"{pred}==={ref}" for pred, ref in zip(pred_processed, ref_processed)])
     
-    for _, pred_code, ref_code in preds.items():
-        pred_processed = pre_process(pred_code)
-        ref_processed = pre_process(ref_code)
+    for pred_code, ref_code in zip(pred_processed, ref_processed):
         
         # 将预处理后的字符串转换为字符列表（字符级 tokenization）
-        candidate_tokens = list(pred_processed)
-        reference_tokens = list(ref_processed)
+        candidate_tokens = list(pred_code)
+        reference_tokens = list(ref_code)
         
         # 使用平滑函数，防止因某些 n-gram 数量为 0 导致 log(0)错误
         weights = tuple([1.0 / max_n] * max_n)
@@ -78,10 +77,7 @@ def compute_exprate(preds):
     5. compute <=2 exp rate
     
     args:
-        preds (dict): prediction results from different models, 
-            preds: {'url': 'predict latext code'}
-
-        global arg: test_data: {'url': 'caption latext code'}, the correct latext code    
+        preds (list): url, prediction results from different models, and ground truth labels   
 
     return:
         tuple(float): full, <=1, <=2 exp rate
@@ -90,7 +86,7 @@ def compute_exprate(preds):
 
     # 根据 URL 匹配，构造预测和标签的对
     pairs = []
-    for _, pred_code, ref_code in preds.items():
+    for _, pred_code, ref_code in preds:
         pred_processed = pre_process(pred_code)
         ref_processed = pre_process(ref_code)
         pairs.append((pred_processed, ref_processed))
