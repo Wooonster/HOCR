@@ -13,6 +13,11 @@ def pre_process(txt):
         1. check and remove "$$\t" and "\t$$" at the beginning and the end of pred_code and caption_code
         2. remove all " "
     """
+
+    if txt.startswith("<start_latex>"):
+        txt = txt[len("<start_latex>"):]
+    if txt.endswith("<end_latex>"):
+        txt = txt[:-len("<end_latex>")]
     
     if txt.startswith("```latex\n"):
         txt = txt[len("```latex\n"):]
@@ -23,7 +28,9 @@ def pre_process(txt):
         txt = txt[len("\t$$"):]
     if txt.endswith("\t$$"):
         txt = txt[:-len("\t$$")]
+        
     txt = txt.replace(' ', '')
+    
     return txt
 
 
@@ -49,7 +56,7 @@ def compute_bleu(preds, max_n=4):
 
     pred_processed = [pre_process(pred[1]) for pred in preds]
     ref_processed = [pre_process(pred[2]) for pred in preds]
-    print([f"{pred}==={ref}" for pred, ref in zip(pred_processed, ref_processed)])
+    print([f"{pred}<<<===>>>{ref}" for pred, ref in zip(pred_processed, ref_processed)])
     
     for pred_code, ref_code in zip(pred_processed, ref_processed):
         

@@ -30,7 +30,7 @@ def extract_img(pkl_file: str, save_dir: str=None):
         print(f"Saved image: {output_path}")
 
 
-extract_img(pkl_file='/root/autodl-tmp/crohme/2019/images.pkl', save_dir='../dataset/ft_data/')
+extract_img(pkl_file='/root/autodl-tmp/HOCR/finetune/crohme/train/images.pkl', save_dir='/root/autodl-tmp/HOCR/dataset/ft_data_train/')
 
 def build_instruct_dataset(cap_text):
     with open(cap_text, 'r') as f:
@@ -45,11 +45,11 @@ def build_instruct_dataset(cap_text):
                 'conversation': [
                     {
                         "role": "user",
-                        "url": '/root/autodl-tmp/HOCR/dataset/ft_data/' + title + '.png'
+                        "url": '/root/autodl-tmp/HOCR/dataset/ft_data_train/' + title + '.png'
                     },
                     {
                         "role": "assistant",
-                        "caption": '$$\t' + cap + '\t$$'
+                        "caption": '<start_latex>' + cap + '<end_latex>'
                     }
                 ]
             }
@@ -63,5 +63,5 @@ def build_instruct_dataset(cap_text):
         json.dump(cvt_dataset, f, ensure_ascii=False, indent=2)
     
 
-# build_instruct_dataset(cap_text='./crohme/2019/caption.txt')
+build_instruct_dataset(cap_text='/root/autodl-tmp/HOCR/finetune/crohme/train/caption.txt')
 # print(data[:1], len(data))
