@@ -17,3 +17,5 @@ Pillow
 peft
 nltk
 Levenshtein
+autoawq
+sympy

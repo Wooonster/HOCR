@@ -9,7 +9,7 @@ dataset/ft_data/
 test/
 results/checkpoints/
 old_vit.py
-*.zip
+**.zip
 finetune/crohme/
 finetune/vl7b/
 finetune/vl3b/
@@ -17,9 +17,10 @@ finetune/*.zip
 finetune/ft_model/
 finetune/output/
 finetune/swanlog/
-*/.ipynb_checkpoints/
+**/.ipynb_checkpoints/
 finetune/distill/
 .ipynb_checkpoints/
 __pycache__
-finetune/data/ft_dataset/
+finetune/data/
+finetune/runs_grpo_ft/
 finetune/model/
