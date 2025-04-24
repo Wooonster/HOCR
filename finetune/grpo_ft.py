@@ -108,6 +108,15 @@ def setup_dataset(processor, tokenizer, dataset_id_or_path):
         )
 
         # **关键：** 这里把路径读成 PIL.Image
+	# Fix the image path before loading
+
+        old_base = "/root/autodl-tmp/HOCR/dataset"
+        new_base = "dataset"
+	
+        if image_path.startswith(old_base):
+            relative_path = os.path.relpath(image_path, old_base)
+	    image_path = os.path.join(new_base, relative_path)
+
         img = Image.open(image_path).convert("RGB")
 
         return {
