@@ -20,7 +20,7 @@ from PIL import Image
 from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer, get_peft_config, ModelConfig, TrlParser
 from trl.trainer.grpo_trainer import GRPOTrainer
-from vlm_rft_trainer.grpo_trainer import Qwen2VLGRPOTrainer
+from vlm_trainer.grpo_trainer import Qwen2VLGRPOTrainer
 from peft import LoraConfig, TaskType, get_peft_model
 import swanlab
 from swanlab.integration.transformers import SwanLabCallback
@@ -108,10 +108,10 @@ def setup_dataset(processor, tokenizer, dataset_id_or_path):
         )
 
         # **关键：** 这里把路径读成 PIL.Image
-	# Fix the image path before loading
+    	# Fix the image path before loading
 
         old_base = "/root/autodl-tmp/HOCR/dataset"
-        new_base = "dataset"
+        new_base = "/dataset/"
 	
         if image_path.startswith(old_base):
             relative_path = os.path.relpath(image_path, old_base)
