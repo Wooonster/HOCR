@@ -2,12 +2,14 @@ import os
 os.environ["HF_DATASETS_CACHE"] = "./data/cache/"
 
 import re
+import cv2
 import logging
 import torch
 import json
 import random
 import transformers
 import sympy as sp
+import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 from sympy.parsing.latex import parse_latex
@@ -45,30 +47,37 @@ if not logger.handlers:
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
     logger.addHandler(handler)
+
+
+def img_process(img):
+    gray = img.convert("L")  # to grayscale
+    arr = np.array(gray)  # to array
+    # 应用二值化阈值，确保公式为白色，背景为黑色
+    # Apply a binarization threshold to ensure that the formula appears white and the background appears black.
+    _, bin_arr = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # transfer to PIL Image
+    return Image.fromarray(bin_arr)
     
 
 def setup_dataset(processor, tokenizer, dataset_id_or_path):
-    # 1) 直接加载 JSON 数组文件，每条数据长这样：{"message":[{...}]}
-    ds = load_dataset(
-        "json",
-        data_files=dataset_id_or_path,
-    )["train"]  # Dataset 类型，每行 {'message': [...]}
+    # load json file directly {"message":[{...}]}
+    ds = load_dataset("json", data_files=dataset_id_or_path)["train"]  # Dataset: {'message': [...]}
 
-    # 2) 划分 train/test
+    # split train/test
     split = ds.train_test_split(
         test_size=0.1, shuffle=True, seed=5525
     )
-    train_ds = split["train"].shuffle(seed=525).select(range(2000))
+    train_ds = split["train"]  # .shuffle(seed=525).select(range(2000))
     test_ds  = split["test"]
 
-    # 3) preprocess：提取 prompt, image, answer
+    # preprocess: get prompt, image, answer
     def preprocess(example):
-        # 拿到那条对话
+        # per message
         msg        = example["message"][0]
         image_path = msg["conversation"][0]["url"]
         answer     = msg["conversation"][1]["caption"]
 
-        # 构造一次性的 messages，用来生成带模板的 prompt
+        # construct messages
         messages = [
             {
                 "role": "system",
@@ -100,37 +109,31 @@ def setup_dataset(processor, tokenizer, dataset_id_or_path):
             },
         ]
 
-        # 用 processor 生成最终的字符串 prompt
+        # use processor to generate final prompt
         prompt_str = processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
         )
 
-        # **关键：** 这里把路径读成 PIL.Image
+        # use PIL.Image as img file
         img = Image.open(image_path).convert("RGB")
+        img = img_process(img)
 
         return {
-            "prompt": prompt_str,  # Trainer.compute_loss 会直接用这个字符串
-            "image":  img,         # AutoProcessor 会正确识别 PIL.Image
-            "answer": answer,      # 供 reward 函数使用
+            "prompt": prompt_str,  
+            "image":  img,         
+            "answer": answer,      
         }
 
-    # 4) map 掉旧列，只留 prompt/image/answer 三列
-    train_ds = train_ds.map(
-        preprocess,
-        remove_columns=train_ds.column_names,
-    )
-    test_ds = test_ds.map(
-        preprocess,
-        remove_columns=test_ds.column_names,
-    )
-
+    # map drop other columns, except for prompt/image/answer 
+    train_ds = train_ds.map(preprocess, remove_columns=train_ds.column_names)
+    test_ds  = test_ds.map(preprocess, remove_columns=test_ds.column_names)
     return train_ds, test_ds
 
 
 def extract_latex(text):
-    # 尝试匹配不同的标签对
+    # extract matching patterns
     patterns = [
         (r"<latex>(.*?)</latex>", re.DOTALL),
         (r"<start_latex>(.*?)</end_latex>", re.DOTALL),
@@ -174,11 +177,13 @@ def stric_correct_reward_func(completions, answer, **kwargs):
 
 def soft_correct_reward_func(completions, answer, **kwargs):
     """
-    计算软匹配奖励：如果解析后两者数学表达式相等，则返回1.0分，否则返回0.0分。
+    Calculate the soft matching reward: 
+        if the parsed mathematical expressions are equivalent, 
+        return a score of 1.0; otherwise, return 0.0.
     
-    使用 Sympy 的 LaTeX 解析器 parse_latex 将生成的 LaTeX 与标准答案解析为数学表达式。
-    如果解析结果为 Equality（方程），则分别比较左右两侧。
-    否则直接使用符号计算比较二者是否数学上相等。
+    Use Sympy’s LaTeX parser parse_latex to parse both the generated LaTeX and the reference answer into mathematical expressions.
+    If the parsed result is an Equality (an equation), compare the left-hand side and right-hand side separately.
+    Otherwise, directly use symbolic computation to determine whether the two expressions are mathematically equivalent.
     """
     scores = []
 
@@ -193,6 +198,7 @@ def soft_correct_reward_func(completions, answer, **kwargs):
                 expr_resp = parse_latex(resp_latex)
                 expr_ans = parse_latex(ans_latex)
                 # 如果两者均为 Equality 对象，则分别比较左右两侧
+                # If both are Equality objects, compare their left-hand sides and right-hand sides separately.
                 if isinstance(expr_resp, sp.Equality) and isinstance(expr_ans, sp.Equality):
                     diff_lhs = sp.simplify(expr_resp.lhs - expr_ans.lhs)
                     diff_rhs = sp.simplify(expr_resp.rhs - expr_ans.rhs)
@@ -202,6 +208,7 @@ def soft_correct_reward_func(completions, answer, **kwargs):
                         scores.append(0.0)
                 else:
                     # 否则，直接比较整个表达式
+                    # otherwise, compare the expression directly
                     if sp.simplify(expr_resp - expr_ans) == 0:
                         scores.append(1.0)
                     else:
@@ -215,10 +222,11 @@ def soft_correct_reward_func(completions, answer, **kwargs):
 def length_penalty_reward(completions, max_words: int = 50, **kwargs):
     """
     只做长度惩罚（超长时线性递减），不再重复做 <latex>…</latex> 检查。
+    Only apply length penalty (linear decay when exceeding the limit); no longer perform <latex>…</latex> checks.
     
-    - 正常：<= max_words 单词 → reward=1.0
-    - 超长：score = max(0, 1 - overshoot/total_words)
-    - 不含 latex 块：score=0.0 （由 strict_format_reward_func 单独保证格式）
+    - 正常：<= max_words 单词 → reward=1.0  Normal: ≤ max_words words → reward = 1.0
+    - 超长：score = max(0, 1 - overshoot/total_words)  Exceeds length: score = max(0, 1 - overshoot / total_words)
+    - 不含 latex 块：score=0.0  No LaTeX block present: score = 0.0 
     """
     latex_pat = re.compile(r'<latex>(.*?)</latex>', re.DOTALL)
     rewards = []
@@ -226,11 +234,10 @@ def length_penalty_reward(completions, max_words: int = 50, **kwargs):
     for comp in completions:
         m = latex_pat.search(comp)
         if not m:
-            # 格式检查交给 strict_format_reward_func，不在这里重复
             rewards.append(0.0)
             continue
         
-        # 去掉 latex 块后统计“正文”单词数
+        # count latex in the context without <latex>/</latex> labels
         outside = latex_pat.sub('', comp).strip()
         words = [w for w in outside.split() if w]
         
@@ -277,8 +284,10 @@ def grpo(model_args, script_args, training_args):
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
     )
-    
-    model.enable_input_require_grads()   # 开启梯度检查点时(training_args.gradient_checkpointing=True,)要执行该方法
+
+    # 开启梯度检查点时(training_args.gradient_checkpointing=True,)要执行该方法
+    # enable with training_args.gradient_checkpointing=True,
+    model.enable_input_require_grads()   
 
     training_dataset, test_dataset = setup_dataset(processor, tokenizer, script_args.dataset_id_or_path)
 
@@ -293,7 +302,7 @@ def grpo(model_args, script_args, training_args):
     # load swanlab
     swanlab_callback = SwanLabCallback(
         project="HOCR-GRPO",
-        experiment_name="qwen2.5vl-3b-instruct-grpo",
+        experiment_name="qwen2.5vl-3b-instruct-grpo-full",
         config={
             "model": "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct",
             "dataset": "",
@@ -320,18 +329,18 @@ def grpo(model_args, script_args, training_args):
         callbacks=[swanlab_callback,],
     )
 
-    # # Check for last checkpoint
-    # last_checkpoint = get_last_checkpoint(training_args.output_dir)
-    # if last_checkpoint is not None and training_args.resume_from_checkpoint is None:
-    #     logger.info(f"Checkpoint detected, resuming training at {last_checkpoint}.")
+    # Check for last checkpoint
+    last_checkpoint = get_last_checkpoint(training_args.output_dir)
+    if last_checkpoint is not None and training_args.resume_from_checkpoint is None:
+        logger.info(f"Checkpoint detected, resuming training at {last_checkpoint}.")
 
-    # # Train the model
-    # logger.info(
-    #     f'*** Starting training {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} for {training_args.num_train_epochs} epochs***'
-    # )
-    # train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
+    # Train the model
+    logger.info(
+        f'*** Starting training {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} for {training_args.num_train_epochs} epochs***'
+    )
+    train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
     
-    train_result = trainer.train()
+    # train_result = trainer.train()
     
     # Log and save metrics
     metrics = train_result.metrics
